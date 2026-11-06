@@ -102,7 +102,7 @@ always @(posedge clk) begin
 	end
 	if (bus_d && !bus_on &&
 	    ((bus_log && bus_n < 400) || (bus_at != 0 && bus_clk >= bus_at * 40000 && bus_n < 100000) ||
-	     (io_log && (bus_k >= 3'd3 || bus_a[15:10] == 6'b111101 || (bus_k == 3'd2 && (bus_a == 16'hB9FF || bus_a == 16'hBA00 || bus_a == 16'hE6BA)))))) begin
+	     (io_log && (bus_k >= 3'd3 || bus_a[15:10] == 6'b111101 || (bus_a[15:2] == 14'h3FFF))))) begin
 		bus_n = bus_n + 1;
 		$display("%s %04x di %02x do %02x t %0d", bus_k == 0 ? "ia" : bus_k == 1 ? "mr" : bus_k == 2 ? "mw" : bus_k == 3 ? "ir" : "iw", bus_a, bus_di, bus_do, bus_clk / 400);
 	end

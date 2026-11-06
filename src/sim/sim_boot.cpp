@@ -132,6 +132,7 @@ int main(int argc, char **argv) {
 	struct Ex { uint32_t a; int v; bool gt; };
 	std::vector<Ex> expects;
 	int speed = 0, ram = 1;
+	uint64_t reset_at = 0;   // --reset MS: the Reset of the OSD, the RAM stays
 	const char *save_disk = nullptr;
 	bool ms7007 = false;
 	int ms = 1000;
@@ -158,6 +159,7 @@ int main(int argc, char **argv) {
 			fclose(f);
 		}
 		else if (!strcmp(argv[i], "--save-disk")) save_disk = argv[++i];
+		else if (!strcmp(argv[i], "--reset")) reset_at = strtoull(argv[++i], 0, 0) * 40000;
 		else if (!strcmp(argv[i], "--speed")) speed = atoi(argv[++i]);
 		else if (!strcmp(argv[i], "--ram")) ram = atoi(argv[++i]);
 		else if (!strcmp(argv[i], "--ms7007")) ms7007 = true;
@@ -225,6 +227,7 @@ int main(int argc, char **argv) {
 		}
 		if (top->beep && !prev) beeps++;
 		prev = top->beep;
+		if (reset_at) top->reset = clks - start >= reset_at && clks - start < reset_at + 40000;
 		if (kn < keys.size() && clks - start >= keys[kn].at) {
 			top->kb_scancode = keys[kn++].code;
 			top->kb_scancode_upd ^= 1;
