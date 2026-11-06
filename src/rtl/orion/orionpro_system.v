@@ -131,6 +131,9 @@ orion_cpu cpu (
 
 // ------------------------------------------------------------------ decoding
 reg [7:0] p01 = 8'd0, p02 = 8'd0;  // the printer: latches only
+// the control words of the PPIs 03, 07, 0B: kept only to be read back, as OriZEmu does (DRIVER.SYS of
+// AltairDOS tells the PRO from an Orion-128 by IN 0B != FF)
+reg [7:0] p03 = 8'hFF, p07 = 8'hFF, p0b = 8'hFF;
 reg [7:0] p04 = 8'd0, p05 = 8'd0, p06 = 8'd0;  // the segments of the windows RAM0..2
 reg [7:0] p08 = 8'd0;         // the working page of PRO
 reg [7:0] p09 = 8'd0;         // the segment of ROM2
@@ -203,6 +206,9 @@ always @(posedge clk) begin
 		snd_ff <= 1'b0;
 		fb <= 8'h80;
 		p01 <= 8'd0;
+		p03 <= 8'hFF;
+		p07 <= 8'hFF;
+		p0b <= 8'hFF;
 		p02 <= 8'd0;
 		p04 <= 8'd0;
 		p05 <= 8'd0;
@@ -227,6 +233,9 @@ always @(posedge clk) begin
 		if (io_wr) case (ioa)
 			8'h01: p01 <= cpu_do;
 			8'h02: p02 <= cpu_do;
+			8'h03: p03 <= cpu_do;
+			8'h07: p07 <= cpu_do;
+			8'h0B: p0b <= cpu_do;
 			8'h04: p04 <= cpu_do;
 			8'h05: p05 <= cpu_do;
 			8'h06: p06 <= cpu_do;
@@ -348,8 +357,10 @@ always @* begin
 		8'h06: cpu_di = p06;
 		8'h08: cpu_di = p08;
 		8'h09: cpu_di = p09;
+		8'h03: cpu_di = p03;
+		8'h07: cpu_di = p07;
 		8'h0A: cpu_di = p0a;
-		8'hFB: cpu_di = fb;
+		8'h0B: cpu_di = p0b;
 		default: if (ay_sel_reg) cpu_di = ay_do;
 	endcase
 end

@@ -44,6 +44,18 @@ wire [20:0] MA;
 wire [15:0] MD;
 wire [1:0] MWR_N;
 
+// the clock registers as kg_mcu_rtc keeps them: a RAM, read a clock after the address
+wire [7:0] rtc_a, rtc_di;
+wire rtc_cs, rtc_wr_n;
+reg [7:0] rtc_ram [0:255];
+reg [7:0] rtc_do = 8'd0;
+integer rtc_i;
+initial for (rtc_i = 0; rtc_i < 256; rtc_i = rtc_i + 1) rtc_ram[rtc_i] = 8'd0;
+always @(posedge clk) begin
+	if (rtc_cs && !rtc_wr_n) rtc_ram[rtc_a] <= rtc_di;
+	rtc_do <= rtc_ram[rtc_a];
+end
+
 orionpro_system sys (
 	.clk(clk), .reset(reset), .boot(boot), .cpu_speed(cpu_speed), .ram_size(ram_size), .kb_ms7007(kb_ms7007),
 	.rom_active(rom_active), .rom_addr(rom_addr), .rom_data(rom_data), .rom_wr(rom_wr),
@@ -52,7 +64,7 @@ orionpro_system sys (
 	.img_data_addr(img_data_addr), .img_data(img_data), .img_result_wr(img_result_wr), .img_result(img_result),
 	.img_sum(img_sum), .img_q_wr(img_q_wr), .img_q_di(img_q_di), .img_q_ack(img_q_ack),
 	.kb_scancode(kb_scancode), .kb_scancode_upd(kb_scancode_upd),
-	.joy(13'd0), .img_phys_wr(1'b0), .img_phys(16'd0), .FDC_INDEX(1'b0), .FDC_TR00(1'b0), .FDC_WPRT(1'b0), .FDC_RDATA(1'b0), .rtc_a(), .rtc_di(), .rtc_do(8'h00), .rtc_cs(), .rtc_wr_n(),
+	.joy(13'd0), .img_phys_wr(1'b0), .img_phys(16'd0), .FDC_INDEX(1'b0), .FDC_TR00(1'b0), .FDC_WPRT(1'b0), .FDC_RDATA(1'b0), .rtc_a(rtc_a), .rtc_di(rtc_di), .rtc_do(rtc_do), .rtc_cs(rtc_cs), .rtc_wr_n(rtc_wr_n),
 	.clk_pix(clk), .pal(1'b0), .rgb(rgb), .hs(hs), .vs(vs), .de(de), .beep(beep), .ay_sound(), .tape_in(1'b1), .tape_out(),
 	.MA(MA), .MD(MD), .MWR_N(MWR_N)
 );

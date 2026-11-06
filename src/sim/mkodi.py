@@ -3,7 +3,7 @@
 
  mkodi.py IMAGE SYSTEM [FILE...]. SYSTEM is the DOS with its boot sector at 0 (dosfdd-pro.bin of
  AltairDOS, https://github.com/serge-404/AltairDOS). Byte 2F of the boot sector tells the BIOS where
- to load it (0: page 0, the mode Orion-128; AltairDOS has text there), the disk parameters are in the
+ to load it (0, 1: that page, the mode Orion-128; 2-4 the mode PRO; FF: run the sector; AltairDOS has text there and runs in page 1), the disk parameters are in the
  sector: 2 KB blocks, 128 directory entries, 4 reserved tracks. FILEs go to user 0.
 """
 import os, sys
@@ -12,7 +12,7 @@ img = bytearray(b'\xE5' * SIZE)
 s = open(sys.argv[2], 'rb').read()
 assert s[0] == 0xC3 and len(s) <= 20480
 s = bytearray(s)
-s[0x2F] = 0
+s[0x2F] = 1
 img[:len(s)] = s
 DIR, BLOCK = 20480, 2048
 block, ent = 2, 0
