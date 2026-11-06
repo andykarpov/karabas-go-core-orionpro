@@ -98,7 +98,8 @@ module orionpro_system #(
 	output wire [1:0] MWR_N
 );
 
-wire run_reset = reset | rom_active | file_active;
+wire clearing;                // the first start of the core: orion_loader clears the RAM
+wire run_reset = reset | rom_active | file_active | clearing;
 
 wire [15:0] a;
 wire [7:0] cpu_do;
@@ -219,7 +220,8 @@ always @(posedge clk) begin
 			rd_page <= cpu_do[1:0];
 			snd_fe <= cpu_do[4];
 		end
-		if (lat_2c) rd_page <= cpu_do[1:0];
+		// 2C is a mask of the ROM disks (ROM2: 1 << n), FE the number
+		if (lat_2c) rd_page <= cpu_do[3] ? 2'd3 : cpu_do[2] ? 2'd2 : cpu_do[1] ? 2'd1 : 2'd0;
 		if (lat_ff) snd_ff <= ~snd_ff;
 		if (io_wr) case (ioa)
 			8'h01: p01 <= cpu_do;
@@ -673,6 +675,7 @@ orion_loader loader (
 	.file_data(file_data),
 	.file_wr(file_wr),
 	.tick(tick == 20'd0),
+	.clearing(clearing),
 	.aux_req(ld_req),
 	.aux_we(ld_we),
 	.aux_addr(ld_addr),

@@ -59,6 +59,13 @@ orionpro_system sys (
 
 reg [7:0] lo [0:2097151];
 reg [7:0] hi [0:2097151];
+// +rnd: the SRAM as another core left it, not zeros
+integer ri;
+initial if ($test$plusargs("rnd"))
+	for (ri = 0; ri < 2097152; ri = ri + 1) begin
+		lo[ri] = $random;
+		hi[ri] = $random;
+	end
 assign MD = (MWR_N == 2'b11) ? { hi[MA], lo[MA] } : 16'bz;
 assign dbg_q = dbg_addr[0] ? hi[dbg_addr[21:1]] : lo[dbg_addr[21:1]];
 

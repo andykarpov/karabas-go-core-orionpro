@@ -12,6 +12,10 @@
    slot 2  ROM2 at 3E0000, 64 KB
    slot 3  ROM1 at 3F0000, 8 KB
 
+ Once after the first ROMs of the core the RAM is cleared, the machine in reset (clearing, some 300
+ ms): the shell of ROM2 takes what it finds in page 1 for a RAM disk, and what another core left
+ there sends it astray (a stack through the screen, no keyboard). A Reset of the machine does not clear.
+
  The RAM disk is page 1: records of a 16-byte header (name 8, load address 2, size 2, 4 reserved)
  and the data, an FF after the last one. Once per frame (tick) the walker follows the records to
  find their end; a first byte that is no ASCII character ends them too (a page never written).
@@ -34,6 +38,7 @@ module orion_loader (
 	input wire file_wr,
 
 	input wire tick,
+	output wire clearing,
 
 	output wire aux_req,
 	output wire aux_we,
@@ -83,8 +88,18 @@ assign aux_we = cur == C_WRITE;
 
 wire busy = file_active | rom_active;
 
+reg rom_d = 1'b0;
+reg clr = 1'b0, clr_done = 1'b0;
+reg [20:0] clr_a = 21'd0;
+assign clearing = clr;
+
 always @(posedge clk) begin
 	active_d <= file_active;
+	rom_d <= rom_active;
+	if (rom_d && !rom_active && !clr_done) begin
+		clr <= 1'b1;
+		clr_done <= 1'b1;
+	end
 
 	// the writes
 	if (rom_wr) begin
@@ -170,6 +185,14 @@ always @(posedge clk) begin
 			aux_din <= pend_data;
 			if (!rom_wr && !file_wr)
 				pend <= 1'b0;
+		end
+		else if (clr && !busy) begin
+			cur <= C_WRITE;
+			aux_addr <= { 1'b0, clr_a };
+			aux_din <= 8'd0;
+			clr_a <= clr_a + 21'd1;
+			if (clr_a == 21'h1FFFFF)
+				clr <= 1'b0;
 		end
 		else if (w != W_IDLE && !busy) begin
 			cur <= C_WALK;
