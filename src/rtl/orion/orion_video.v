@@ -99,7 +99,8 @@ wire [6:0] col_now = line_start ? 7'd0 : col;
 
 wire ega = vmode[4];
 wire second = ega && ph == 4'd4;
-wire [1:0] base = ega ? { ~vpage[1], second } : ~vpage;
+// orion_sram takes the address when the slot starts, up to two clocks after the request: it holds
+wire [1:0] base = ega ? { ~vpage[1], ph >= 4'd4 } : ~vpage;
 assign vid_req = live && (cell_start || second) && col_now < cells;
 assign vid_addr = { 5'd0, base, col_now[5:0], row };
 

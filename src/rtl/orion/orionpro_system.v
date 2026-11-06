@@ -158,6 +158,8 @@ wire [7:0] sdc_in_data;
 wire [7:0] fdc_do;
 wire [7:0] sdc_img_mounted;
 wire [1:0] hd_rd, hd_wr;
+wire sel_ide;
+wire [7:0] ide_do;
 wire [63:0] sdc_img_size;
 
 wire wr_any = mem_wr | io_wr;
@@ -326,6 +328,8 @@ always @* begin
 	else if (mem_rd) begin
 		if (!sel_dev) cpu_di = sram_do;
 	end
+	else if (io_rd && sel_ide)
+		cpu_di = ide_do;
 	else if (io_rd) case (ioa)
 		8'h00: cpu_di = dip;
 		8'h01: cpu_di = p01;
@@ -391,12 +395,32 @@ jt49 ay (
 );
 
 // ------------------------------------------------------------------ the hard disks
-// docs/PLAN.md Ф2: the IDE at 56-5F
-wire [31:0] hd_sector = 32'd0;
-wire [7:0] hd_byte_out = 8'hFF;
+wire [31:0] hd_sector;
+wire [7:0] hd_byte_out;
 wire sdc_hd = sdc_slot[2:1] == 2'b11;
-assign hd_rd = 2'b00;
-assign hd_wr = 2'b00;
+
+orion_ide ide (
+	.clk(clk),
+	.reset(run_reset),
+	.a(ioa),
+	.rd(io_rd),
+	.wr(io_wr),
+	.din(cpu_do),
+	.dout(ide_do),
+	.sel(sel_ide),
+	.img_mounted(sdc_img_mounted[7:6]),
+	.img_size(sdc_img_size),
+	.sdc_rd(hd_rd),
+	.sdc_wr(hd_wr),
+	.sdc_sector(hd_sector),
+	.sdc_busy(sdc_busy && sdc_hd),
+	.sdc_done(sdc_done && sdc_hd),
+	.sdc_error(sdc_error && sdc_hd),
+	.sdc_byte_in_strobe(sdc_in_strobe && sdc_hd),
+	.sdc_byte_addr(sdc_byte_addr),
+	.sdc_byte_in_data(sdc_in_data),
+	.sdc_byte_out_data(hd_byte_out)
+);
 
 // ------------------------------------------------------------------ the disk drive
 // KR1818VG93 at 10-13 and, in the mode Orion-128, F700-F703, F710-F713 (an incomplete decoder), the
