@@ -1,7 +1,7 @@
 {
     "id": "orionpro",
     "name": "Orion-PRO",
-    "build": "26110601",
+    "build": "26110602",
     "visible": true,
     "type": "osd",
     "order": 14,

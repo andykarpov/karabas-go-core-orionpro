@@ -310,7 +310,13 @@ wire [21:0] sram_addr = sel_rd ? { 4'b1000, rd_page, rd_pc, rd_pb } :
 // the area of the ports of Orion-128 is never written: F400-F7FF are the ports, F800-FFFF only latches
 wire sram_we = mem_wr && !sel_rom1 && !sel_rom2 && !(o128 && a[15:10] >= 6'b111101);
 
-wire [7:0] dip = { boot == 2'd2, 1'b0, boot != 2'd0, 2'b00, ~kb_ms7007, 2'b11 };
+// D1, D0 = 0: the BIOS looks for a hard disk, a floppy (an image is mounted)
+reg dip_fd = 1'b0, dip_hd = 1'b0;
+always @(posedge clk) begin
+	if (sdc_img_mounted[4]) dip_fd <= |sdc_img_size[31:0];
+	if (sdc_img_mounted[6]) dip_hd <= |sdc_img_size[31:0];
+end
+wire [7:0] dip = { boot == 2'd2, 1'b0, boot != 2'd0, 2'b00, ~kb_ms7007, ~dip_hd, ~dip_fd };
 
 always @* begin
 	cpu_di = 8'hFF;
