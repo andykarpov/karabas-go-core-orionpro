@@ -1,37 +1,158 @@
 {
-    "id": "orion128",
-    "name": "Orion-128",
-    "build": "26110606",
+    "id": "orionpro",
+    "name": "Orion-PRO",
+    "build": "26110701",
     "visible": true,
     "type": "osd",
-    "order": 13,
+    "order": 14,
     "eeprom_bank": 255,
-    "drives": ["FDD0", "FDD1"],
+    "drives": [
+        "FDD0",
+        "FDD1"
+    ],
     "roms": [
-    {"filename": "roms/romdisk1.bin", "address": 1048576},
-    {"filename": "roms/M2rk.bin", "address": 2097152}
+        {
+            "filename": "roms/rom2.bin",
+            "address": 4063232
+        },
+        {
+            "filename": "roms/rom1.bin",
+            "address": 4128768
+        }
     ],
     "boards": {
-        "go": {"bitstream": "karabas_go.bin"},
-        "mini": {"bitstream": "karabas_mini.bin"},
-        "minig": {"bitstream": "karabas_minig.bin"}
+        "go": {
+            "bitstream": "karabas_go.bin"
+        },
+        "mini": {
+            "bitstream": "karabas_mini.bin"
+        },
+        "minig": {
+            "bitstream": "karabas_minig.bin"
+        }
     },
     "osd": [
-    {"type": "F", "name": "Disk A", "slot": 4, "extensions": ".odi,.img", "dir": "/orion", "hotkey": "Menu+F5", "physical": 1},
-    {"type": "F", "name": "Disk B", "slot": 5, "extensions": ".odi,.img", "dir": "/orion", "hotkey": "Menu+F6", "physical": 1},
-    {"type": "F", "name": "HDD master", "slot": 6, "extensions": ".ohi,.img,.hdd", "dir": "/orion"},
-    {"type": "F", "name": "HDD slave", "slot": 7, "extensions": ".ohi,.img,.hdd", "dir": "/orion"},
-    {"type": "FL", "name": "ROM disk", "slot": 0, "extensions": ".bin,.rom", "dir": "/orion", "hotkey": "Menu+F1", "autoload": 1},
-    {"type": "FL", "name": "ORDOS file", "slot": 1, "extensions": ".ord,.bru", "dir": "/orion", "hotkey": "Menu+F2"},
-    {"type": "FL", "name": "RKO file", "slot": 3, "extensions": ".rko", "dir": "/orion", "hotkey": "Menu+F3"},
-    {"type": "FL", "name": "Monitor", "slot": 2, "extensions": ".bin,.rom", "dir": "/orion", "hotkey": "Menu+F4", "autoload": 1},
-    {"type": "-"},
-    {"type": "S", "name": "CPU", "options": ["KR580VM80A", "Z80"], "default": 0, "hotkey": "Menu+C"},
-    {"type": "S", "name": "Z80 speed", "options": ["2.5 MHz", "5 MHz", "10 MHz"], "default": 0, "hotkey": "Menu+S", "enable_if": {"item": "CPU", "value": "Z80"}},
-    {"type": "S", "name": "RAM", "options": ["256 KB", "512 KB", "1 MB"], "default": 1},
-    {"type": "S", "name": "Keyboard", "options": ["RK-86", "MS7007"], "default": 0, "hotkey": "Menu+K"},
-    {"type": "S", "name": "Video", "options": ["800x600 60Hz", "720x576 50Hz"], "default": 0},
-    {"type": "S", "name": "Mon half", "options": ["1", "2"], "default": 0, "hotkey": "Menu+M"},
-    {"type": "T", "name": "Reset", "index": 16, "hotkey": "F12"}
+        {
+            "type": "F",
+            "name": "Disk A",
+            "slot": 4,
+            "extensions": ".odi,.img",
+            "dir": "/orionpro",
+            "hotkey": "Menu+F5",
+            "physical": 1
+        },
+        {
+            "type": "F",
+            "name": "Disk B",
+            "slot": 5,
+            "extensions": ".odi,.img",
+            "dir": "/orionpro",
+            "hotkey": "Menu+F6",
+            "physical": 1
+        },
+        {
+            "type": "F",
+            "name": "HDD master",
+            "slot": 6,
+            "extensions": ".ohi,.img,.hdd",
+            "dir": "/orionpro"
+        },
+        {
+            "type": "F",
+            "name": "HDD slave",
+            "slot": 7,
+            "extensions": ".ohi,.img,.hdd",
+            "dir": "/orionpro"
+        },
+        {
+            "type": "FL",
+            "name": "ROM disk",
+            "slot": 0,
+            "extensions": ".bin,.rom",
+            "dir": "/orionpro",
+            "hotkey": "Menu+F1",
+            "autoload": 1
+        },
+        {
+            "type": "FL",
+            "name": "ORDOS file",
+            "slot": 1,
+            "extensions": ".ord,.bru",
+            "dir": "/orionpro",
+            "hotkey": "Menu+F2"
+        },
+        {
+            "type": "FL",
+            "name": "ROM1",
+            "slot": 3,
+            "extensions": ".bin,.rom",
+            "dir": "/orionpro"
+        },
+        {
+            "type": "FL",
+            "name": "ROM2",
+            "slot": 2,
+            "extensions": ".bin,.rom",
+            "dir": "/orionpro"
+        },
+        {
+            "type": "-"
+        },
+        {
+            "type": "S",
+            "name": "Boot",
+            "options": [
+                "Menu",
+                "PRO",
+                "Orion-128"
+            ],
+            "default": 0,
+            "hotkey": "Menu+B"
+        },
+        {
+            "type": "S",
+            "name": "CPU speed",
+            "options": [
+                "2.5 MHz",
+                "5 MHz",
+                "10 MHz"
+            ],
+            "default": 1,
+            "hotkey": "Menu+S"
+        },
+        {
+            "type": "S",
+            "name": "RAM",
+            "options": [
+                "512 KB",
+                "1 MB",
+                "2 MB"
+            ],
+            "default": 2
+        },
+        {
+            "type": "S",
+            "name": "Keyboard",
+            "options": [
+                "RK-86",
+                "MS7007"
+            ],
+            "default": 0,
+            "hotkey": "Menu+K"
+        },
+        {
+            "type": "S",
+            "name": "Video",
+            "options": [
+                "800x600 60Hz",
+                "720x576 50Hz"
+            ],
+            "default": 0
+        },
+        {
+            "type": "T",
+            "name": "Reset",
+            "hotkey": "F12"
+        }
     ]
 }

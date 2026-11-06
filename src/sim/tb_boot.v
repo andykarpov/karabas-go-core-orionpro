@@ -1,11 +1,11 @@
 `timescale 1ns / 1ps
 `default_nettype wire
 
-// orion_system with a model of the SRAM (two lanes of 2M x 8, /OE low, as msx tb_sys), for sim_boot.
+// orionpro_system with a model of the SRAM (two lanes of 2M x 8, /OE low, as msx tb_sys), for sim_boot.
 module tb_boot (
 	input wire clk,
 	input wire reset,
-	input wire cpu_z80,
+	input wire [1:0] boot,
 	input wire [1:0] cpu_speed,
 	input wire [1:0] ram_size,
 	input wire kb_ms7007,
@@ -44,16 +44,16 @@ wire [20:0] MA;
 wire [15:0] MD;
 wire [1:0] MWR_N;
 
-orion_system sys (
-	.clk(clk), .reset(reset), .cpu_z80(cpu_z80), .cpu_speed(cpu_speed), .ram_size(ram_size), .kb_ms7007(kb_ms7007),
+orionpro_system sys (
+	.clk(clk), .reset(reset), .boot(boot), .cpu_speed(cpu_speed), .ram_size(ram_size), .kb_ms7007(kb_ms7007),
 	.rom_active(rom_active), .rom_addr(rom_addr), .rom_data(rom_data), .rom_wr(rom_wr),
 	.file_active(file_active), .file_slot(file_slot), .file_addr(file_addr), .file_data(file_data), .file_wr(file_wr),
 	.img_mounted(img_mounted), .img_size(img_size), .img_wp(8'd0), .img_data_wr(img_data_wr),
 	.img_data_addr(img_data_addr), .img_data(img_data), .img_result_wr(img_result_wr), .img_result(img_result),
 	.img_sum(img_sum), .img_q_wr(img_q_wr), .img_q_di(img_q_di), .img_q_ack(img_q_ack),
 	.kb_scancode(kb_scancode), .kb_scancode_upd(kb_scancode_upd),
-	.joy(13'd0), .mon_hi(1'b0), .uart_rx_data(8'd0), .uart_rx_idx(8'd0), .uart_tx_data(), .uart_tx_wr(), .img_phys_wr(1'b0), .img_phys(16'd0), .FDC_INDEX(1'b0), .FDC_TR00(1'b0), .FDC_WPRT(1'b0), .FDC_RDATA(1'b0), .rtc_a(), .rtc_di(), .rtc_do(8'h00), .rtc_cs(), .rtc_wr_n(),
-	.clk_pix(clk), .pal(1'b0), .rgb(rgb), .hs(hs), .vs(vs), .de(de), .beep(beep), .ay_sound(), .dac(), .tape_in(1'b1), .tape_out(),
+	.joy(13'd0), .img_phys_wr(1'b0), .img_phys(16'd0), .FDC_INDEX(1'b0), .FDC_TR00(1'b0), .FDC_WPRT(1'b0), .FDC_RDATA(1'b0), .rtc_a(), .rtc_di(), .rtc_do(8'h00), .rtc_cs(), .rtc_wr_n(),
+	.clk_pix(clk), .pal(1'b0), .rgb(rgb), .hs(hs), .vs(vs), .de(de), .beep(beep), .ay_sound(), .tape_in(1'b1), .tape_out(),
 	.MA(MA), .MD(MD), .MWR_N(MWR_N)
 );
 
@@ -67,17 +67,6 @@ always @(posedge clk) begin
 	if (!MWR_N[1]) hi[MA] <= MD[15:8];
 end
 
-// +fdc: the writes to the floppy controller and the first reads of each kind
-reg fdc_log = 1'b0;
-reg ide_log = 1'b0;
-reg ide_s = 1'b0;
-initial ide_log = $test$plusargs("ide");
-always @(posedge clk)
-	ide_s <= sys.ide.strobe;
-always @(posedge clk)
-	if (ide_log && sys.ide.strobe && !ide_s)
-		$display("ide %s a%d cs %b do %04x di %04x bsy %b", sys.ide.ctl[6] ? "rd" : "wr", sys.ide.ctl[2:0], sys.ide.ctl[4:3], sys.ide.dout, sys.ide.dout_wr, sys.ide.ata.status[7]);
-initial fdc_log = $test$plusargs("fdc");
 // +bus: the first memory and port accesses of the CPU
 reg bus_log = 1'b0;
 initial bus_log = $test$plusargs("bus");
@@ -87,24 +76,7 @@ always @(posedge clk) begin
 	bus_d <= sys.mem_rd | sys.mem_wr | sys.io_rd | sys.io_wr | sys.inta;
 	if (bus_log && bus_n < 400 && (sys.mem_rd | sys.mem_wr | sys.io_rd | sys.io_wr | sys.inta) && !bus_d) begin
 		bus_n = bus_n + 1;
-		$display("%s %04x di %02x do %02x ki %b ih %0d ie %b", sys.inta ? "ia" : sys.mem_rd ? "mr" : sys.mem_wr ? "mw" : sys.io_rd ? "ir" : "iw", sys.a, sys.cpu_di, sys.cpu_do, sys.key_irq, sys.int_hold, sys.key_ie);
+		$display("%s %04x di %02x do %02x ih %0d", sys.inta ? "ia" : sys.mem_rd ? "mr" : sys.mem_wr ? "mw" : sys.io_rd ? "ir" : "iw", sys.a, sys.cpu_di, sys.cpu_do, sys.int_hold);
 	end
 end
-always @(posedge clk)
-	if (fdc_log && sys.wr_p && sys.mem_wr && (sys.sel_fdc || sys.sel_rgu))
-		$display("fdc wr %04x = %02x", sys.a, sys.cpu_do);
-
-// +sd: the bytes of the SD card (orion_sd), the byte sent and the one the card gave
-reg sd_log = 1'b0;
-initial sd_log = $test$plusargs("sd");
-reg [7:0] sd_out = 8'hFF;
-always @(posedge clk) begin
-	if (sys.sd.d_wr && sys.sd.bitcnt == 3'd0)
-		sd_out <= sys.sd.cs_n ? 8'hFF : sys.sd.out;
-	if (sd_log && sys.sd.xfer)
-		$display("sd %02x -> %02x cs_n %b st %0d", sys.sd.tx, sd_out, sys.sd.cs_n, sys.sd.state);
-	if (sd_log && sys.sd.cs_wr)
-		$display("sd cs %02x", sys.cpu_do);
-end
-
 endmodule

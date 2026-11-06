@@ -5,7 +5,7 @@ run
 -ofn orionpro
 -ofmt NGC
 -p xc6slx25-2-ftg256
--top orion_system
+-top orionpro_system
 -opt_mode Speed
 -opt_level 2
 -power NO
