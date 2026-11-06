@@ -78,12 +78,33 @@ end
 reg bus_log = 1'b0;
 initial bus_log = $test$plusargs("bus");
 integer bus_n = 0;
+// +busat=MS: 100000 accesses from that time on; +iolog: every port and F400-F7FF access
+integer bus_at = 0, bus_clk = 0;
+reg io_log = 1'b0;
+initial begin
+	if (!$value$plusargs("busat=%d", bus_at)) bus_at = 0;
+	io_log = $test$plusargs("iolog");
+end
 reg bus_d = 1'b0;
+reg [15:0] bus_a = 16'd0;
+reg [7:0] bus_di = 8'd0, bus_do = 8'd0;
+reg [2:0] bus_k = 3'd0;
+wire bus_on = sys.mem_rd | sys.mem_wr | sys.io_rd | sys.io_wr | sys.inta;
+// logged at the end of the access: di is what the CPU took
 always @(posedge clk) begin
-	bus_d <= sys.mem_rd | sys.mem_wr | sys.io_rd | sys.io_wr | sys.inta;
-	if (bus_log && bus_n < 400 && (sys.mem_rd | sys.mem_wr | sys.io_rd | sys.io_wr | sys.inta) && !bus_d) begin
+	bus_clk = bus_clk + 1;
+	bus_d <= bus_on;
+	if (bus_on) begin
+		bus_a <= sys.a;
+		bus_di <= sys.cpu_di;
+		bus_do <= sys.cpu_do;
+		bus_k <= sys.inta ? 3'd0 : sys.mem_rd ? 3'd1 : sys.mem_wr ? 3'd2 : sys.io_rd ? 3'd3 : 3'd4;
+	end
+	if (bus_d && !bus_on &&
+	    ((bus_log && bus_n < 400) || (bus_at != 0 && bus_clk >= bus_at * 40000 && bus_n < 100000) ||
+	     (io_log && (bus_k >= 3'd3 || bus_a[15:10] == 6'b111101 || (bus_k == 3'd2 && (bus_a == 16'hB9FF || bus_a == 16'hBA00 || bus_a == 16'hE6BA)))))) begin
 		bus_n = bus_n + 1;
-		$display("%s %04x di %02x do %02x ih %0d", sys.inta ? "ia" : sys.mem_rd ? "mr" : sys.mem_wr ? "mw" : sys.io_rd ? "ir" : "iw", sys.a, sys.cpu_di, sys.cpu_do, sys.int_hold);
+		$display("%s %04x di %02x do %02x t %0d", bus_k == 0 ? "ia" : bus_k == 1 ? "mr" : bus_k == 2 ? "mw" : bus_k == 3 ? "ir" : "iw", bus_a, bus_di, bus_do, bus_clk / 400);
 	end
 end
 endmodule

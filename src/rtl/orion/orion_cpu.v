@@ -25,12 +25,14 @@ module orion_cpu (
 	output wire io_wr,
 
 	input wire int_n,
-	output wire inta     // the Z80 takes the interrupt
+	output wire inta,    // the Z80 takes the interrupt
+	output wire im2      // its interrupt mode is 2
 );
 
 wire [15:0] a_z80;
 wire [7:0] do_z80;
 wire mreq_n, iorq_n, rd_n, wr_n, m1_n;
+wire [211:0] z_reg;
 
 wire [3:0] per = speed == 2'd0 ? 4'd15 : speed == 2'd1 ? 4'd7 : 4'd3;
 wire [3:0] mid = { 1'b0, per[3:1] };
@@ -65,7 +67,7 @@ T80pa #(.Mode(0)) cpuz80 (
 	.A(a_z80),
 	.DI(din),
 	.DO(do_z80),
-	.REG(),
+	.REG(z_reg),
 	.DIRSet(1'b0),
 	.DIR(212'd0)
 );
@@ -77,5 +79,6 @@ assign mem_wr = ~mreq_n & ~wr_n;
 assign io_rd = ~iorq_n & ~rd_n;
 assign io_wr = ~iorq_n & ~wr_n;
 assign inta = ~m1_n & ~iorq_n;
+assign im2 = z_reg[209:208] == 2'b10;
 
 endmodule

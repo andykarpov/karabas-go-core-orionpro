@@ -104,7 +104,7 @@ wire run_reset = reset | rom_active | file_active | clearing;
 wire [15:0] a;
 wire [7:0] cpu_do;
 reg [7:0] cpu_di;
-wire mem_rd, mem_wr, io_rd, io_wr, inta;
+wire mem_rd, mem_wr, io_rd, io_wr, inta, im2;
 wire rd_ok;
 wire phys_now, phys_drq, phys_hold;
 wire [7:0] phys_do;
@@ -125,7 +125,8 @@ orion_cpu cpu (
 	.io_rd(io_rd),
 	.io_wr(io_wr),
 	.int_n(int_n),
-	.inta(inta)
+	.inta(inta),
+	.im2(im2)
 );
 
 // ------------------------------------------------------------------ decoding
@@ -314,7 +315,7 @@ wire [7:0] dip = { boot == 2'd2, 1'b0, boot != 2'd0, 2'b00, ~kb_ms7007, 2'b11 };
 always @* begin
 	cpu_di = 8'hFF;
 	if (inta && !mem_rd)      // the T80 shows M1 and IORQ together for a moment after reset
-		cpu_di = 8'hFF;
+		cpu_di = im2 ? 8'h00 : 8'hFF;   // the table of vectors starts at I:00; IM 0 is RST 38
 	else if (rd_dev && sel_f4)
 		cpu_di = ppi4_do;
 	else if (rd_dev && sel_f5)
