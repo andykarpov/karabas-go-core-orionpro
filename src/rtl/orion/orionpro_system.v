@@ -415,9 +415,17 @@ end
 always @(posedge clk)
 	if (wr_p && wr_dev && sel_rtc_a)
 		rtc_ar <= cpu_do;
-assign rtc_a = rtc_ar;
-assign rtc_di = cpu_do;
-assign rtc_cs = wr_p && wr_dev && sel_rtc_d;
+// At the end of the first RAM clear (the mcu is ready by then) register B is written 06: binary, 24 h,
+// no interrupts. AltairDOS reads the clock in binary and writes B only when the clock is set; the
+// mcu starts in BCD, so 02:17 read as 02:23.
+reg clearing_d = 1'b0, rtc_init = 1'b0;
+always @(posedge clk) begin
+	clearing_d <= clearing;
+	rtc_init <= clearing_d && !clearing;
+end
+assign rtc_a = rtc_init ? 8'h0B : rtc_ar;
+assign rtc_di = rtc_init ? 8'h06 : cpu_do;
+assign rtc_cs = rtc_init || (wr_p && wr_dev && sel_rtc_d);
 assign rtc_wr_n = !rtc_cs;
 
 // ------------------------------------------------------------------ AY
@@ -510,6 +518,28 @@ reg [2:0] fdc_div = 3'd0;
 always @(posedge clk)
 	fdc_div <= fdc_div + 3'd1;
 
+// wd1793 samples its strobes on ce only (every 8 clocks): a memory read of the Z80 at 10 MHz (F703 in
+// the mode Orion-128) is 8 clocks or less and could fall between two. So an access is held from its
+// start to the first ce after its end, with its address and data.
+wire fdc_ce = fdc_div == 3'd0;
+wire fdc_acc = sel_fdc && !phys_now;
+reg fdc_rd_s = 1'b0, fdc_wr_s = 1'b0;
+reg [1:0] fdc_a_s = 2'd0;
+reg [7:0] fdc_d_s = 8'd0;
+always @(posedge clk) begin
+	if (fdc_acc && (rd_dev || wr_dev)) begin
+		fdc_rd_s <= rd_dev;
+		fdc_wr_s <= wr_dev;
+		fdc_a_s <= a[1:0];
+		if (wr_dev)
+			fdc_d_s <= cpu_do;
+	end
+	else if (fdc_ce) begin
+		fdc_rd_s <= 1'b0;
+		fdc_wr_s <= 1'b0;
+	end
+end
+
 wire drive = rgu[0];
 
 // the physical drives: map_a / map_b 0 the image, 1 DS0, 2 DS1 (CMD_IMG_PHYS slot 4 / 5); a mount of an
@@ -561,13 +591,13 @@ wire [7:0] sd_do_a, sd_do_b, sd_buff_din;
 
 wd1793 #(.RWMODE(1), .EDSK(0)) fdc (
 	.clk_sys(clk),
-	.ce(fdc_div == 3'd0),
+	.ce(fdc_ce),
 	.reset(run_reset),
-	.io_en(sel_fdc & ~phys_now),
-	.rd(rd_dev),
-	.wr(wr_dev),
-	.addr(a[1:0]),
-	.din(cpu_do),
+	.io_en(1'b1),
+	.rd(fdc_rd_s),
+	.wr(fdc_wr_s),
+	.addr(fdc_acc ? a[1:0] : fdc_a_s),  // the read data follows the address of the access
+	.din(fdc_d_s),
 	.dout(fdc_do),
 	.drq(fdc_drq),
 	.intrq(),

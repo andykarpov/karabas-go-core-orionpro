@@ -6,6 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A core of the Soviet home computer Orion-PRO (Z80, 2.5 / 5 / 10 MHz, memory dispatcher, EGA-like screens, an Orion-128 compatible mode) for the Karabas Go, Mini and Mini G boards: Xilinx Spartan-6 XC6SLX25, ISE 14.7 (XST). Docs, in Russian: `docs/PLAN.md` (sources, decisions, phases), `docs/HARDWARE.md` (memory map, ports), `docs/BACKLOG.md` (open decisions, things to verify). Follow the phases; record a changed decision in PLAN.md.
 
+Status: phases Ф0–Ф3 merged, Ф4 released for Go, Mini and Mini G (only Mini G tried on the board). User guide: `docs/GUIDE.md` (keep it in step with the core).
+
 All file work goes through the firmware (OSD, `FL` / `F` items, burst): no loader or soft CPU in the core. The core is GPL v3 (`LICENSE`).
 
 The parent is `../karabas-go-core-orion128`: this core started as a copy of it, so a fix in the shared parts (`orion_sram`, `orion_video*`, `orion_kbd`, `orion_fdd_cache`, the tops, the Makefile) probably belongs in both. Also `../karabas-go-core-msx` (`wd1793`, `jt49`), `../karabas-go-core-profi` (vg93), `../karabas-go-core-menu` (800 x 600 on all boards).
@@ -15,7 +17,8 @@ The parent is `../karabas-go-core-orion128`: this core started as a copy of it, 
 - `src/Makefile`: the ISE flow. `src/karabas_<board>.{prj,xst,ut,ucf}`: its inputs.
 - `src/make_core.py`: a symlink to `../../karabas-go-tools/make_core/make_core.py`. `src/tools/check_osd.py`: the slot check of `make core`.
 - `src/core.json`: the core file description (kgo2, `orionpro.kg`, all three boards).
-- `src/rtl/orion/`: `orionpro_system.v` (the machine), `orion_cpu.v` (T80pa as one bus), the rest as in core-orion128.
+- `src/rtl/orion/`: `orionpro_system.v` (the machine), `orion_cpu.v` (T80pa as one bus), `orion_mouse.v` (the Multicard mouse, port 1E), `orion_ide.v` (IDE on 56-5F), `orion_pal.v` (palette E0-E2), the rest as in core-orion128.
+- `src/sim/`: `run_boot.sh` (verilator, the whole machine: minutes; ask the user before long runs), `run_unit.sh` (unit tests, seconds), `mkrom_pro.py` (test ROM1: EGA, IDE), `mkodi.py` (a system floppy from AltairDOS).
 - `src/roms/`: `rom1.bin`, `rom2.bin` (BIOS 3.21 of OriZEmu).
 - `src/orionpro.prj`, `orionpro.xst`: the machine alone, `make orionpro-xst`, `make orionpro-report`.
 - `modules/`: the git submodule [karabas-go-modules](https://github.com/andykarpov/karabas-go-modules), its rules are in `modules/CLAUDE.md`. Clone with `--recursive`.
