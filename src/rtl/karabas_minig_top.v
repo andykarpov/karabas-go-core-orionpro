@@ -232,8 +232,8 @@ assign MCU_IO[5:2] = 4'bzzzz;
 
 wire [7:0] kb_scancode;
 wire [7:0] uart_rx_data, uart_rx_idx;
-wire [7:0] uart_tx_data = 8'h00;
-wire uart_tx_wr = 1'b0;
+wire [7:0] uart_tx_data;
+wire uart_tx_wr;
 wire [12:0] joy_l, joy_r;
 wire kb_scancode_upd;
 wire rom_active, rom_wr;
@@ -255,12 +255,15 @@ wire [23:0] img_q_di;
 wire [7:0] rtc_a, rtc_di, rtc_do;
 wire rtc_cs, rtc_wr_n;
 
+wire [7:0] ms_x, ms_y;
+wire [2:0] ms_b;
+wire ms_upd;
 kg_mcu #(
 	.BURST_MAX_MHZ(32),  // Rev.G has MCU_SCK on a global clock pin
 	.CS_FILTER(3),
 	.ENABLE_RTC(1),
 	.RTC_SKIP_0D(1),     // C and D are flags of the MC146818
-	.ENABLE_UART(0),     // COM ports: docs/PLAN.md Ф3
+	.ENABLE_UART(1),     // COM1 (8251 at 30 / 31)
 	.ENABLE_MATRIX(0),
 	.ENABLE_DEBUG(0),
 	.ENABLE_IMG(1),      // the disks: the images of the F items
@@ -288,6 +291,11 @@ kg_mcu #(
 	.KB_SCANCODE_UPD(kb_scancode_upd),
 	.JOY_L(joy_l),
 	.JOY_R(joy_r),
+	.MS_X(ms_x),
+	.MS_Y(ms_y),
+	.MS_B(ms_b),
+	.MS_Z(),
+	.MS_UPD(ms_upd),
 
 	.ROMLOADER_ACTIVE(rom_active),
 	.ROMLOAD_ADDR(rom_addr),
@@ -393,6 +401,8 @@ orionpro_system orion (
 	.cpu_speed(sw_speed),
 	.ram_size(sw_ram),
 	.kb_ms7007(sw_ms7007),
+	.uart_rx_data(uart_rx_data), .uart_rx_idx(uart_rx_idx), .uart_tx_data(uart_tx_data), .uart_tx_wr(uart_tx_wr),
+	.ms_x(ms_x), .ms_y(ms_y), .ms_b(ms_b), .ms_upd(ms_upd),
 	.joy(joy_l | joy_r),
 	.rom_active(rom_active),
 	.rom_addr(rom_addr[21:0]),

@@ -28,6 +28,15 @@ module orionpro_system #(
 	input wire [1:0] ram_size,   // 0 512 KB, 1 1 MB, 2 2 MB
 	input wire kb_ms7007,        // MS7007 keyboard (else RK-86), change it with a reset
 	input wire [12:0] joy,       // the joysticks as keys (orion_kbd)
+	// COM1 (the 8251 at 30 / 31) through kg_mcu_uart: a byte of the mcu is there when its index changes
+	input wire [7:0] uart_rx_data,
+	input wire [7:0] uart_rx_idx,
+	output wire [7:0] uart_tx_data,
+	output wire uart_tx_wr,
+	input wire [7:0] ms_x,        // the USB mouse of kg_mcu: the parallel mouse of the Multicard (orion_mouse)
+	input wire [7:0] ms_y,
+	input wire [2:0] ms_b,
+	input wire ms_upd,
 
 	// the ROM loader of the mcu
 	input wire rom_active,
@@ -134,6 +143,7 @@ reg [7:0] p01 = 8'd0, p02 = 8'd0;  // the printer: latches only
 // the control words of the PPIs 03, 07, 0B: kept only to be read back, as OriZEmu does (DRIVER.SYS of
 // AltairDOS tells the PRO from an Orion-128 by IN 0B != FF)
 reg [7:0] p03 = 8'hFF, p07 = 8'hFF, p0b = 8'hFF;
+reg [7:0] p1c = 8'h00, p1d = 8'hFF;   // the Multicard PPI: 1C a free latch, 1D its control word (read back)
 reg [7:0] p04 = 8'd0, p05 = 8'd0, p06 = 8'd0;  // the segments of the windows RAM0..2
 reg [7:0] p08 = 8'd0;         // the working page of PRO
 reg [7:0] p09 = 8'd0;         // the segment of ROM2
@@ -209,6 +219,8 @@ always @(posedge clk) begin
 		p03 <= 8'hFF;
 		p07 <= 8'hFF;
 		p0b <= 8'hFF;
+		p1c <= 8'h00;
+		p1d <= 8'hFF;
 		p02 <= 8'd0;
 		p04 <= 8'd0;
 		p05 <= 8'd0;
@@ -236,6 +248,8 @@ always @(posedge clk) begin
 			8'h03: p03 <= cpu_do;
 			8'h07: p07 <= cpu_do;
 			8'h0B: p0b <= cpu_do;
+			8'h1C: p1c <= cpu_do;
+			8'h1D: p1d <= cpu_do;
 			8'h04: p04 <= cpu_do;
 			8'h05: p05 <= cpu_do;
 			8'h06: p06 <= cpu_do;
@@ -265,6 +279,31 @@ always @(posedge clk) begin
 		int_hold <= int_hold - 11'd1;
 end
 assign int_n = int_hold == 11'd0;
+
+// ------------------------------------------------------------------ COM1, COM2, the timer
+// COM1 (8251 at 30 data, 31 control): the bytes go through the mcu at the speed of the firmware; the
+// mode and command words do nothing. Status: D0 TxRDY, D1 RxRDY, D2 TxEMPTY, D7 DSR. COM2 (34 / 35)
+// has no line: its transmitter is always ready. The 8253 at 38-3B makes the clocks of the 8251s
+// only: its writes do nothing, a read gives FF.
+reg [7:0] uart_idx_d = 8'd0;
+reg uart_rdy = 1'b0;
+always @(posedge clk) begin
+	uart_idx_d <= uart_rx_idx;
+	if (run_reset)
+		uart_rdy <= 1'b0;
+	else if (uart_rx_idx != uart_idx_d)
+		uart_rdy <= 1'b1;
+	else if (io_rd && ioa == 8'h30)
+		uart_rdy <= 1'b0;
+end
+assign uart_tx_data = cpu_do;
+assign uart_tx_wr = wr_p && io_wr && ioa == 8'h30;
+
+// ------------------------------------------------------------------ the mouse of the Multicard (port 1E)
+wire [7:0] mouse_do;
+orion_mouse mouse (
+	.clk(clk), .reset(run_reset), .ms_x(ms_x), .ms_y(ms_y), .ms_b(ms_b), .ms_upd(ms_upd), .port(mouse_do)
+);
 
 // ------------------------------------------------------------------ the PPIs
 wire [7:0] ppi4_do, ppi5_do;
@@ -361,6 +400,12 @@ always @* begin
 		8'h07: cpu_di = p07;
 		8'h0A: cpu_di = p0a;
 		8'h0B: cpu_di = p0b;
+		8'h1C: cpu_di = p1c;
+		8'h1D: cpu_di = p1d;
+		8'h1E: cpu_di = mouse_do;
+		8'h30: cpu_di = uart_rx_data;
+		8'h31: cpu_di = { 5'b10000, 1'b1, uart_rdy, 1'b1 };
+		8'h35: cpu_di = 8'h85;
 		default: if (ay_sel_reg) cpu_di = ay_do;
 	endcase
 end
