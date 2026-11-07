@@ -16,6 +16,9 @@
  The width: 384 points 3 output pixels for 2 (576, x 72..647), 480 points the same (720, the whole
  line), 512 points one pixel each (512, x 104..615). The colours are those of orion_video.
 
+ The modes with D4 of vmode (orion_video) have two words per cell: the planes R, B and G, I in two
+ line buffers, 128 words fetched in a line and a half at most: the half being fetched does not show.
+
  The registers of the machine (vmode, vpage, w512, w480, pcolor) are taken into clk_pix through two
  flip-flops: they change rarely, a change shows on the next line or two.
 */
@@ -24,11 +27,13 @@ module orion_video_576 (
 	input wire clk,
 	input wire clk_pix,
 	input wire en,                 // this output is on: else the fetch stops (the SRAM port is the other one's)
-	input wire [3:0] vmode,
+	input wire [4:0] vmode,
 	input wire [1:0] vpage,
 	input wire w512,
 	input wire w480,
 	input wire [7:0] pcolor,
+	input wire [2:0] pal_we,
+	input wire [7:0] pal_d,
 
 	output reg vid_req = 1'b0,
 	output reg [20:0] vid_addr = 21'd0,
@@ -67,9 +72,12 @@ wire new_line = tg_s[2] != tg_s[1];
 
 reg [9:0] next = 10'd0;
 reg busy = 1'b0, waiting = 1'b0;
+reg fp = 1'b0;                // the plane: 0 the word at the base, 1 the one 4000 above it
+wire ega = vmode[4];
+wire [1:0] fbase = ega ? { ~vpage[1], fp } : ~vpage;
 reg [6:0] fcol = 7'd0;
 reg [7:0] frow = 8'd0;
-reg buf_we = 1'b0;
+reg buf_we = 1'b0, buf_p = 1'b0;
 reg [6:0] buf_wa = 7'd0;
 reg [15:0] buf_wd = 16'd0;
 wire [9:0] next_rel = next - V_TOP;
@@ -87,21 +95,27 @@ always @(posedge clk) begin
 		busy <= 1'b1;
 		waiting <= 1'b0;
 		fcol <= 7'd0;
+		fp <= 1'b0;
 	end
 	else if (busy && !waiting && fcol == 7'd0 && !(next >= V_TOP && next < V_TOP + 512 && next_rel[0] == 1'b0))
 		busy <= 1'b0;             // not the first line of a row of the Orion: nothing to fetch
 	else if (busy && !waiting) begin
-		if (fcol == 7'd64)
-			busy <= 1'b0;
+		if (fcol == 7'd64) begin
+			fcol <= 7'd0;
+			fp <= 1'b1;
+			if (!ega || fp)
+				busy <= 1'b0;
+		end
 		else begin
 			frow <= next_rel[8:1];
 			vid_req <= 1'b1;
-			vid_addr <= { 5'd0, ~vpage, fcol[5:0], next_rel[8:1] };
+			vid_addr <= { 5'd0, fbase, fcol[5:0], next_rel[8:1] };
 			waiting <= 1'b1;
 		end
 	end
 	else if (busy && vid_valid) begin
 		buf_we <= 1'b1;
+		buf_p <= fp;
 		buf_wa <= { frow[0], fcol[5:0] };
 		buf_wd <= vid_dout;
 		fcol <= fcol + 7'd1;
@@ -109,15 +123,19 @@ always @(posedge clk) begin
 	end
 end
 
-wire [15:0] buf_q;
+wire [15:0] buf_q, buf_q2;
 reg [6:0] buf_ra = 7'd0;
 kg_sdpram #(.DW(16), .AW(7)) lbuf (
-	.clka(clk), .wea(buf_we), .addra(buf_wa), .dina(buf_wd),
+	.clka(clk), .wea(buf_we & ~buf_p), .addra(buf_wa), .dina(buf_wd),
 	.clkb(clk_pix), .enb(1'b1), .addrb(buf_ra), .doutb(buf_q)
+);
+kg_sdpram #(.DW(16), .AW(7)) lbuf2 (
+	.clka(clk), .wea(buf_we & buf_p), .addra(buf_wa), .dina(buf_wd),
+	.clkb(clk_pix), .enb(1'b1), .addrb(buf_ra), .doutb(buf_q2)
 );
 
 // ------------------------------------------------------------------ clk_pix: the picture
-reg [3:0] vm_s0 = 4'd0, vm_s = 4'd0;
+reg [4:0] vm_s0 = 5'd0, vm_s = 5'd0;
 reg [1:0] w_s0 = 2'd0, w_s = 2'd0;
 reg [7:0] pc_s0 = 8'd0, pc_s = 8'd0;
 always @(posedge clk_pix) begin
@@ -139,7 +157,7 @@ wire [6:0] cells = ww512 ? 7'd64 : ww480 ? 7'd60 : 7'd48;
 reg [3:0] ph = 4'd0;
 reg [6:0] col = 7'd0;
 reg run = 1'b0;
-reg [7:0] pix = 8'd0, cpl = 8'd0, attr = 8'd0;
+reg [7:0] pix = 8'd0, cpl = 8'd0, attr = 8'd0, gpl = 8'd0, ipl = 8'd0;
 wire shift = ww512 ? (ph != cell_last)
                    : (ph == 4'd1 || ph == 4'd2 || ph == 4'd4 || ph == 4'd5 || ph == 4'd7 || ph == 4'd8 || ph == 4'd10);
 // a line starting at x 0 is fetched across the end of the line before (hcnt wraps)
@@ -164,6 +182,8 @@ always @(posedge clk_pix) begin
 		pix <= load_ok ? buf_q[7:0] : 8'd0;
 		cpl <= load_ok ? buf_q[15:8] : 8'd0;
 		attr <= !load_ok ? 8'd0 : vm_s[3] ? pc_s : buf_q[15:8];
+		gpl <= load_ok ? buf_q2[7:0] : 8'd0;
+		ipl <= load_ok ? buf_q2[15:8] : 8'd0;
 		buf_ra <= { buf_ra[6], 6'd1 };
 	end
 	else if (run && ph == cell_last) begin
@@ -173,12 +193,16 @@ always @(posedge clk_pix) begin
 			pix <= 8'd0;
 			cpl <= 8'd0;
 			attr <= 8'd0;
+			gpl <= 8'd0;
+			ipl <= 8'd0;
 		end
 		else begin
 			col <= col + 7'd1;
 			pix <= buf_q[7:0];
 			cpl <= buf_q[15:8];
 			attr <= vm_s[3] ? pc_s : buf_q[15:8];
+			gpl <= buf_q2[7:0];
+			ipl <= buf_q2[15:8];
 			buf_ra <= { buf_ra[6], col[5:0] + 6'd1 };
 		end
 	end
@@ -187,13 +211,17 @@ always @(posedge clk_pix) begin
 		if (shift) begin
 			pix <= { pix[6:0], 1'b0 };
 			cpl <= { cpl[6:0], 1'b0 };
+			gpl <= { gpl[6:0], 1'b0 };
+			ipl <= { ipl[6:0], 1'b0 };
 		end
 	end
 end
 
 reg [3:0] code;
 always @* begin
-	case (vm_s[2:0])
+	if (vm_s[4])
+		code = { vm_s[2] & ipl[7], pix[7], gpl[7], cpl[7] };
+	else case (vm_s[2:0])
 		3'b000: code = pix[7] ? 4'hA : 4'h0;
 		3'b001: code = pix[7] ? 4'hE : 4'h9;
 		3'b100: case ({ pix[7], cpl[7] })
@@ -212,15 +240,15 @@ always @* begin
 		default: code = 4'h0;
 	endcase
 end
-wire [7:0] level = code[3] ? 8'hFF : 8'hAA;
+wire [23:0] pal_rgb;
+orion_pal pal (.clk(clk), .we(pal_we), .din(pal_d), .idx({ code[1], code[2], code[0], code[3] }), .rgb(pal_rgb));
 
 // the point of a cycle is the pixel of its hcnt: the syncs and rgb one register later together
 always @(posedge clk_pix) begin
 	de <= hcnt < H_VISIBLE && vcnt < V_VISIBLE;
 	hs <= hcnt >= H_SYNC && hcnt < H_SYNC_END;
 	vs <= vcnt >= V_SYNC && vcnt < V_SYNC_END;
-	rgb <= (hcnt < H_VISIBLE && vcnt < V_VISIBLE) ?
-		{ code[2] ? level : 8'd0, code[1] ? level : 8'd0, code[0] ? level : 8'd0 } : 24'd0;
+	rgb <= (hcnt < H_VISIBLE && vcnt < V_VISIBLE) ? pal_rgb : 24'd0;
 end
 
 endmodule

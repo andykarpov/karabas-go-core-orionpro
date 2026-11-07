@@ -7,10 +7,14 @@
  What the firmware loads, one master on the aux port of orion_sram. The ROM loader writes at
  rom_addr. An FL item writes by the slot of file_slot (the mcu writes a byte in ten clocks or less
  often, the slot is right from the first byte on; the machine is in reset meanwhile):
-   slot 0  a ROM disk at 100000
-   slot 2  a Monitor at 200000, 2 KB, or two of them in 4 KB (M3435 of the Orion-2010, Monitor half)
+   slot 0  a ROM disk at 200000, 256 KB
    slot 1  an ORDOS file (.ord, .bru) appended to the RAM disk B:
-   slot 3  a tape file (.rko): the same after the 77 bytes of its tape header
+   slot 2  ROM2 at 3E0000, 64 KB
+   slot 3  ROM1 at 3F0000, 8 KB
+
+ Once after the first ROMs of the core the RAM is cleared, the machine in reset (clearing, some 300
+ ms): the shell of ROM2 takes what it finds in page 1 for a RAM disk, and what another core left
+ there sends it astray (a stack through the screen, no keyboard). A Reset of the machine does not clear.
 
  The RAM disk is page 1: records of a 16-byte header (name 8, load address 2, size 2, 4 reserved)
  and the data, an FF after the last one. Once per frame (tick) the walker follows the records to
@@ -34,6 +38,7 @@ module orion_loader (
 	input wire file_wr,
 
 	input wire tick,
+	output wire clearing,
 
 	output wire aux_req,
 	output wire aux_we,
@@ -56,10 +61,8 @@ reg [21:0] pend_addr = 22'd0;
 reg [7:0] pend_data = 8'd0;
 
 // the file
-wire ord_slot = file_slot == 8'd1 || file_slot == 8'd3;
-wire [31:0] skip = file_slot == 8'd3 ? 32'd77 : 32'd0;
-wire in_rec = file_addr >= skip;
-wire [31:0] rec_i = file_addr - skip;   // the byte of the record
+wire ord_slot = file_slot == 8'd1;
+wire [31:0] rec_i = file_addr;          // the byte of the record
 reg [15:0] rec_end = 16'd0;             // the walker: the end of the records
 reg [7:0] size_lo = 8'd0;
 reg [16:0] rec_len = 17'd65535;         // of this record, known at byte 12
@@ -85,8 +88,18 @@ assign aux_we = cur == C_WRITE;
 
 wire busy = file_active | rom_active;
 
+reg rom_d = 1'b0;
+reg clr = 1'b0, clr_done = 1'b0;
+reg [20:0] clr_a = 21'd0;
+assign clearing = clr;
+
 always @(posedge clk) begin
 	active_d <= file_active;
+	rom_d <= rom_active;
+	if (rom_d && !rom_active && !clr_done) begin
+		clr <= 1'b1;
+		clr_done <= 1'b1;
+	end
 
 	// the writes
 	if (rom_wr) begin
@@ -97,15 +110,20 @@ always @(posedge clk) begin
 	else if (file_wr) begin
 		if (file_slot == 8'd0) begin
 			pend <= 1'b1;
-			pend_addr <= { 2'b01, file_addr[19:0] };
+			pend_addr <= { 4'b1000, file_addr[17:0] };
 			pend_data <= file_data;
 		end
 		else if (file_slot == 8'd2) begin
 			pend <= 1'b1;
-			pend_addr <= { 10'b1000000000, file_addr[11:0] };
+			pend_addr <= { 6'b111110, file_addr[15:0] };
 			pend_data <= file_data;
 		end
-		else if (ord_slot && in_rec) begin
+		else if (file_slot == 8'd3) begin
+			pend <= 1'b1;
+			pend_addr <= { 9'b111111000, file_addr[12:0] };
+			pend_data <= file_data;
+		end
+		else if (ord_slot) begin
 			ord_load <= 1'b1;
 			if (rec_i == 32'd10)
 				size_lo <= file_data;
@@ -167,6 +185,14 @@ always @(posedge clk) begin
 			aux_din <= pend_data;
 			if (!rom_wr && !file_wr)
 				pend <= 1'b0;
+		end
+		else if (clr && !busy) begin
+			cur <= C_WRITE;
+			aux_addr <= { 1'b0, clr_a };
+			aux_din <= 8'd0;
+			clr_a <= clr_a + 21'd1;
+			if (clr_a == 21'h1FFFFF)
+				clr <= 1'b0;
 		end
 		else if (w != W_IDLE && !busy) begin
 			cur <= C_WALK;

@@ -1,6 +1,6 @@
 // sim_boot: tb_boot (orion_system + SRAM model) under verilator.
 //
-//   sim_boot --rom FILE:ADDR ... [--z80] [--speed N] [--ram N] [--ms7007] [--ms N] [--ppm OUT]
+//   sim_boot --rom FILE:ADDR ... [--boot N] [--speed N] [--ram N] [--ms7007] [--ms N] [--ppm OUT]
 //            [--key MS:CODE,CODE..] ... [--file MS:SLOT:FILE] ... [--expect ADDR:VALUE] ...
 //            [--disk FILE] [--hdd FILE] [--save-disk OUT]
 //
@@ -132,18 +132,19 @@ int main(int argc, char **argv) {
 	struct Ex { uint32_t a; int v; bool gt; };
 	std::vector<Ex> expects;
 	int speed = 0, ram = 1;
+	uint64_t reset_at = 0;   // --reset MS: the Reset of the OSD, the RAM stays
 	const char *save_disk = nullptr;
 	bool ms7007 = false;
 	int ms = 1000;
 	const char *ppm = nullptr;
-	bool z80 = false;
+	int boot = 0;
 	for (int i = 1; i < argc; i++) {
 		if (!strcmp(argv[i], "--rom")) {
 			std::string s = argv[++i];
 			size_t c = s.rfind(':');
 			roms.push_back({ s.substr(0, c), (uint32_t)strtoul(s.c_str() + c + 1, nullptr, 0) });
 		}
-		else if (!strcmp(argv[i], "--z80")) z80 = true;
+		else if (!strcmp(argv[i], "--boot")) boot = atoi(argv[++i]);
 		else if (!strcmp(argv[i], "--key")) {
 			char *p = argv[++i];
 			uint64_t at = strtoul(p, &p, 10) * 40000;
@@ -158,6 +159,7 @@ int main(int argc, char **argv) {
 			fclose(f);
 		}
 		else if (!strcmp(argv[i], "--save-disk")) save_disk = argv[++i];
+		else if (!strcmp(argv[i], "--reset")) reset_at = strtoull(argv[++i], 0, 0) * 40000;
 		else if (!strcmp(argv[i], "--speed")) speed = atoi(argv[++i]);
 		else if (!strcmp(argv[i], "--ram")) ram = atoi(argv[++i]);
 		else if (!strcmp(argv[i], "--ms7007")) ms7007 = true;
@@ -179,7 +181,7 @@ int main(int argc, char **argv) {
 	}
 	top->img_q_ack = 0; top->img_data_wr = 0; top->img_result_wr = 0; top->img_mounted = 0;
 	if (!disks[4].empty() || !disks[6].empty()) disk_p = &disks[4];
-	top->cpu_z80 = z80; top->cpu_speed = speed; top->ram_size = ram; top->kb_ms7007 = ms7007;
+	top->boot = boot; top->cpu_speed = speed; top->ram_size = ram; top->kb_ms7007 = ms7007;
 	top->file_active = 0; top->file_wr = 0; top->file_slot = 0; top->file_addr = 0;
 	top->reset = 1; top->rom_active = 0; top->rom_wr = 0;
 	top->kb_scancode = 0; top->kb_scancode_upd = 0;
@@ -225,6 +227,7 @@ int main(int argc, char **argv) {
 		}
 		if (top->beep && !prev) beeps++;
 		prev = top->beep;
+		if (reset_at) top->reset = clks - start >= reset_at && clks - start < reset_at + 40000;
 		if (kn < keys.size() && clks - start >= keys[kn].at) {
 			top->kb_scancode = keys[kn++].code;
 			top->kb_scancode_upd ^= 1;
@@ -243,7 +246,7 @@ int main(int argc, char **argv) {
 	}
 	uint32_t sum = 0, lit = 0;
 	for (size_t i = 0; i < last.size(); i++) { sum = sum * 31 + last[i]; lit += last[i] != 0; }
-	printf("%s %d ms: %d frames, beep edges %d, frame sum %08x lit %u\n", z80 ? "Z80" : "8080", ms, frames, beeps, sum, lit);
+	printf("%s %d ms: %d frames, beep edges %d, frame sum %08x lit %u\n", "boot", ms, frames, beeps, sum, lit);
 	if (ppm) {
 		FILE *f = fopen(ppm, "wb");
 		fprintf(f, "P6\n800 600\n255\n");

@@ -2,48 +2,31 @@
 `default_nettype wire
 
 /*
- orion_system.v
+ orionpro_system.v
 
- The Orion-128: the processor, the memory map, the ports and the SRAM, on one clock of 40 MHz.
- docs/HARDWARE.md has the map.
+ The Orion-PRO: the processor, the memory dispatcher, the ports and the SRAM, on one clock of 40 MHz.
+ docs/HARDWARE.md has the map; the order of the checks in the memory is that of peekb / pokeb of
+ OriZEmu, the mode v3.20 there.
 
  SRAM (a byte address of 22 bits, orion_sram):
-   000000  RAM, 1 MB: a page of 64 KB is {page[3:1], a[15:0], page[0]}, so pages 0 and 1 are the two
-           byte lanes of one address (the video reads pixel and colour in one access)
-   100000  ROM disk, 1 MB (the roms of core.json or an FL item), read through port A of the PPI at
-           F500, 16 pages of 64 KB by port FE
-   200000  Monitor (2 KB)
+   000000  RAM, 2 MB: a page of 64 KB is {page[4:1], a[15:0], page[0]}, so pages 0 and 1 are the two
+           byte lanes of one address (the video reads two planes in one access)
+   200000  ROM disk, 256 KB (an FL item), read through port A of the PPI at 28 / F500
    240000  the disk images A and B (orion_fdd_cache), 820 KB each
- Orion-2010 (always on, it takes no addresses of the Z80 Card): F762 / F763 the SD card (orion_sd,
- on the image of HDD master), F764 / F765 a UART (a stub), F766 D6 the keyboard interrupt (vector
- FB), F767 the system register (D6..5 turbo, D4..3 page of the ROM disk, D2..0 p4f: D0 no window of
- the ports, D1 no ROM, D2 writes under the ROM; p4f only by OUT), F768 / F769 the scancode and its
- prefix, F76A an 8-bit DAC; IN / OUT 10-1F, 20-2F, 40-4F are F4xx, F5xx, F76x.
- Hard disks: orion_ide on the PPIs F500 and F600. Clock: F760 address, F761 data, or F7B1 address,
- F7B0 data, in the registers of the mcu. AY: ports FFFD, BFFD of the Z80, or F7A1 register number
- and read, F7A0 write.
+   3E0000  ROM2, 64 KB (core.json or an FL item), 3F0000 ROM1, 8 KB
  The ROMs arrive by the ROM loader of the mcu: rom_addr is that byte address, the machine is in
  reset while rom_active.
-
- After reset the Monitor answers everywhere (a read), until the first read at F800-FFFF: this is
- how a CPU that starts at 0000 finds its code at F800.
 */
 
-module orion_system #(
+module orionpro_system #(
 	parameter PHYS_FDD = 0       // the floppy connector of the Karabas Go (orion_fdd_phys)
 ) (
 	input wire clk,
 	input wire reset,
-	input wire cpu_z80,          // a change is a short reset
-	input wire [1:0] cpu_speed,  // the Z80: 0 2.5, 1 5, 2 10 MHz
-	input wire [1:0] ram_size,   // 0 256, 1 512 KB, 2 1 MB
+	input wire [1:0] boot,       // the DIP switches: 0 the menu of ROM1, 1 PRO, 2 Orion-128
+	input wire [1:0] cpu_speed,  // 0 2.5, 1 5, 2 10 MHz; D5 of port 0A is 2.5 MHz
+	input wire [1:0] ram_size,   // 0 512 KB, 1 1 MB, 2 2 MB
 	input wire kb_ms7007,        // MS7007 keyboard (else RK-86), change it with a reset
-	input wire mon_hi,           // the second 2 KB of a Monitor file of 4 KB; a change resets the machine
-	// the UART of the Orion-2010 (F764 / F765) through kg_mcu_uart
-	input wire [7:0] uart_rx_data,
-	input wire [7:0] uart_rx_idx,
-	output wire [7:0] uart_tx_data,
-	output wire uart_tx_wr,
 	input wire [12:0] joy,       // the joysticks as keys (orion_kbd)
 
 	// the ROM loader of the mcu
@@ -109,47 +92,28 @@ module orion_system #(
 	output wire FDC_SIDE_N,
 	input wire tape_in,          // the tape: port C of the keyboard PPI, D4 in (RK-86 keyboard only: MS7007 has a row there), D0 out
 	output wire tape_out,
-	output wire [7:0] dac,
 
 	output wire [20:0] MA,
 	inout wire [15:0] MD,
 	output wire [1:0] MWR_N
 );
 
-// a change of the processor resets the machine for 16 states, the new one starts from the Monitor
-reg z80 = 1'b0;
-reg mhi = 1'b0;
-reg [7:0] sw_cnt = 8'd0;
-always @(posedge clk) begin
-	if (sw_cnt != 8'd0)
-		sw_cnt <= sw_cnt - 8'd1;
-	else if (cpu_z80 != z80 || mon_hi != mhi) begin
-		z80 <= cpu_z80;
-		mhi <= mon_hi;
-		sw_cnt <= 8'd255;
-	end
-end
-
-wire run_reset = reset | rom_active | file_active | (sw_cnt != 8'd0);
-
-// the speed of the Z80: the OSD item, or F767 D6..5 of the Orion-2010 (10 2.5, 00 5, 01 10 MHz)
-reg [1:0] spd = 2'd0;
-reg [1:0] spd_osd = 2'd0;
-wire [1:0] p767_turbo = spd == 2'd0 ? 2'b10 : spd == 2'd1 ? 2'b00 : 2'b01;
+wire clearing;                // the first start of the core: orion_loader clears the RAM
+wire run_reset = reset | rom_active | file_active | clearing;
 
 wire [15:0] a;
 wire [7:0] cpu_do;
 reg [7:0] cpu_di;
-wire mem_rd, mem_wr, io_rd, io_wr, inte, inta;
+wire mem_rd, mem_wr, io_rd, io_wr, inta, im2;
 wire rd_ok;
 wire phys_now, phys_drq, phys_hold;
 wire [7:0] phys_do;
 wire int_n;
+wire [1:0] spd;
 
 orion_cpu cpu (
 	.clk(clk),
 	.reset(run_reset),
-	.cpu_z80(z80),
 	.speed(spd),
 	.rd_ok(rd_ok),
 	.hold(phys_hold),
@@ -162,33 +126,35 @@ orion_cpu cpu (
 	.io_wr(io_wr),
 	.int_n(int_n),
 	.inta(inta),
-	.inte(inte)
+	.im2(im2)
 );
 
 // ------------------------------------------------------------------ decoding
-wire full = z80 & fb[5];                       // Z80 Card: all of 0000-FFFF is RAM
-wire top_f800 = !full && a[15:11] == 5'b11111;
-reg [7:0] p767 = 8'd0;                         // F767 of the Orion-2010
-wire win = !full && !p767[0];                  // the window of the ports in the memory
-wire sel_dev = win && a[15:10] == 6'b111101;   // F400-F7FF, a memory access
-// the IN / OUT mirrors of the Orion-2010: 10-1F F4xx, 20-2F F5xx, 40-4F F76x
+reg [7:0] p01 = 8'd0, p02 = 8'd0;  // the printer: latches only
+// the control words of the PPIs 03, 07, 0B: kept only to be read back, as OriZEmu does (DRIVER.SYS of
+// AltairDOS tells the PRO from an Orion-128 by IN 0B != FF)
+reg [7:0] p03 = 8'hFF, p07 = 8'hFF, p0b = 8'hFF;
+reg [7:0] p04 = 8'd0, p05 = 8'd0, p06 = 8'd0;  // the segments of the windows RAM0..2
+reg [7:0] p08 = 8'd0;         // the working page of PRO
+reg [7:0] p09 = 8'd0;         // the segment of ROM2
+reg [7:0] p0a = 8'h10;        // D0..2 the windows, D3 ROM2, D4 ROM1, D5 2.5 MHz, D6 F000 fixed, D7 Orion-128
+wire o128 = p0a[7];
+wire mem_any = mem_rd | mem_wr;
 wire io_any = io_rd | io_wr;
-wire io_f4 = io_any && a[7:4] == 4'h1;
-wire io_f5 = io_any && a[7:4] == 4'h2;
-wire io_f76 = io_any && a[7:4] == 4'h4;
-wire sel_f4 = (sel_dev && a[9:8] == 2'd0) || io_f4;
-wire sel_f5 = (sel_dev && a[9:8] == 2'd1) || io_f5;
-wire sel_f6 = sel_dev && a[9:8] == 2'd2;
+wire [7:0] ioa = a[7:0];
+wire sel_dev = o128 && mem_any && a[15:10] == 6'b111101;   // F400-F7FF
+wire sel_f4 = (sel_dev && a[9:8] == 2'd0) || (io_any && ioa[7:2] == 6'b000110);  // 18-1B
+wire sel_f5 = (sel_dev && a[9:8] == 2'd1) || (io_any && ioa[7:2] == 6'b001010);  // 28-2B
 wire sel_f7 = sel_dev && a[9:8] == 2'd3;
-wire sel_f76 = (sel_f7 && a[7:4] == 4'h6) || io_f76;  // F760-F76F, the register in a[3:0]
 wire wr_dev = mem_wr | io_wr;
 wire rd_dev = mem_rd | io_rd;
 wire sel_fdc, sel_rgu, fdc_drq;
-wire sel_rtc_a = (sel_f76 && a[3:0] == 4'h0) || (sel_f7 && a[7:0] == 8'hB1);
-wire sel_rtc_d = (sel_f76 && a[3:0] == 4'h1) || (sel_f7 && a[7:0] == 8'hB0);
+wire sel_rtc_a = (sel_f7 && (a[7:0] == 8'h60 || a[7:0] == 8'hB1)) || (io_any && ioa == 8'h51);
+wire sel_rtc_d = (sel_f7 && (a[7:0] == 8'h61 || a[7:0] == 8'hB0)) || (io_any && ioa == 8'h50);
 reg [7:0] rtc_ar = 8'd0;
-wire ay_io = z80 && a[15] && a[7:0] == 8'hFD;             // FFFD (A14 = 1), BFFD (A14 = 0)
-wire sel_ay_mem = sel_f7 && a[7:4] == 4'hA;
+wire ay_fd = a[15] && ioa == 8'hFD;                        // FFFD (A14 = 1), BFFD (A14 = 0)
+wire ay_sel_reg = io_any && ((ay_fd && a[14]) || ioa == 8'h3F);
+wire ay_sel_data = io_any && ((ay_fd && !a[14]) || ioa == 8'h3E);
 wire [7:0] ay_do;
 wire sdc_busy, sdc_done, sdc_error, sdc_in_strobe;
 wire [2:0] sdc_slot;
@@ -196,10 +162,9 @@ wire [8:0] sdc_byte_addr;
 wire [7:0] sdc_in_data;
 wire [7:0] fdc_do;
 wire [7:0] sdc_img_mounted;
-reg key_irq = 1'b0;           // the keyboard interrupt of the Orion-2010
-reg uart_irq = 1'b0;
-reg [7:0] r76;                // a read of F762..F769
 wire [1:0] hd_rd, hd_wr;
+wire sel_ide;
+wire [7:0] ide_do;
 wire [63:0] sdc_img_size;
 
 wire wr_any = mem_wr | io_wr;
@@ -208,23 +173,25 @@ always @(posedge clk)
 	wr_d <= wr_any;
 wire wr_p = wr_any & ~wr_d;   // one clock at the start of a write
 
-// the latches: writes to F8xx.. or the ports F8.. of the Z80
-wire mw = mem_wr && win;
-wire lat_f8 = (mw && a[15:8] == 8'hF8) || (io_wr && a[7:0] == 8'hF8);
-wire lat_f9 = (mw && a[15:8] == 8'hF9) || (io_wr && a[7:0] == 8'hF9);
-wire lat_fa = (mw && a[15:8] == 8'hFA) || (io_wr && a[7:0] == 8'hFA);
-wire lat_fb = z80 && ((mw && a[15:8] == 8'hFB) || (io_wr && a[7:0] == 8'hFB));
-wire lat_fc = z80 && ((mw && a[15:8] == 8'hFC) || (io_wr && a[7:0] == 8'hFC));
-wire lat_fe = z80 && io_wr && a[7:0] == 8'hFE;
-wire lat_ff = z80 && io_wr && a[7:0] == 8'hFF;
+// the latches: the ports of the Z80, and F800-FA00 in the memory in the mode Orion-128
+wire mw = mem_wr && o128;
+wire lat_f8 = (mw && a[15:8] == 8'hF8) || (io_wr && ioa == 8'hF8);
+wire lat_f9 = (mw && a[15:8] == 8'hF9) || (io_wr && ioa == 8'hF9);
+wire lat_fa = (mw && a[15:8] == 8'hFA) || (io_wr && ioa == 8'hFA);
+wire lat_fb = io_wr && ioa == 8'hFB;
+wire lat_fc = io_wr && ioa == 8'hFC;
+wire lat_fe = io_wr && ioa == 8'hFE;
+wire lat_ff = io_wr && ioa == 8'hFF;
+wire lat_2c = io_wr && ioa == 8'h2C;
 
-reg [7:0] vmode = 8'd0;       // port F8: D3..0 the mode, D7 screen of 480 points
+reg [7:0] vmode = 8'd0;       // port F8: D4..0 the mode, D7 screen of 480 points
 reg [7:0] pfa = 8'd0;         // port FA: D1..0 the screen, D7 screen of 512 points
-reg [3:0] mbank = 4'd0;       // port F9: the page of 64 KB
+reg [7:0] pf9 = 8'd0;         // port F9: the working page of the mode Orion-128
 reg [7:0] pfc = 8'd0;         // port FC: the colours of the pseudocolour mode
-reg [4:0] pfe = 5'd0;         // port FE: D3..0 the page of the ROM disk, D4 sound
+reg [1:0] rd_page = 2'd0;     // ports FE D1..0, 2C: the page of the ROM disk
+reg snd_fe = 1'b0;            // FE D4
 reg snd_ff = 1'b0;            // toggled by a write to port FF
-// port FB, Z80 Card II: D7 = 0 the dispatcher: 0000-3FFF is the segment D1..0 of page D3..2;
+// port FB: D7 = 0 the dispatcher of Orion-128: 0000-3FFF is the segment D1..0 of page D3..2;
 // D6 interrupts, D5 all RAM
 reg [7:0] fb = 8'h80;
 
@@ -232,24 +199,57 @@ always @(posedge clk) begin
 	if (run_reset) begin
 		vmode <= 8'd0;
 		pfa <= 8'd0;
-		mbank <= 4'd0;
+		pf9 <= 8'd0;
 		pfc <= 8'd0;
-		pfe <= 5'd0;
+		rd_page <= 2'd0;
+		snd_fe <= 1'b0;
 		snd_ff <= 1'b0;
 		fb <= 8'h80;
+		p01 <= 8'd0;
+		p03 <= 8'hFF;
+		p07 <= 8'hFF;
+		p0b <= 8'hFF;
+		p02 <= 8'd0;
+		p04 <= 8'd0;
+		p05 <= 8'd0;
+		p06 <= 8'd0;
+		p08 <= 8'd0;
+		p09 <= 8'd0;
+		p0a <= 8'h10;
 	end
 	else if (wr_p) begin
 		if (lat_f8) vmode <= cpu_do;
-		if (lat_f9) mbank <= cpu_do[3:0];
+		if (lat_f9) pf9 <= cpu_do;
 		if (lat_fa) pfa <= cpu_do;
 		if (lat_fb) fb <= cpu_do;
 		if (lat_fc) pfc <= cpu_do;
-		if (lat_fe) pfe <= cpu_do[4:0];
+		if (lat_fe) begin
+			rd_page <= cpu_do[1:0];
+			snd_fe <= cpu_do[4];
+		end
+		// 2C is a mask of the ROM disks (ROM2: 1 << n), FE the number
+		if (lat_2c) rd_page <= cpu_do[3] ? 2'd3 : cpu_do[2] ? 2'd2 : cpu_do[1] ? 2'd1 : 2'd0;
 		if (lat_ff) snd_ff <= ~snd_ff;
+		if (io_wr) case (ioa)
+			8'h01: p01 <= cpu_do;
+			8'h02: p02 <= cpu_do;
+			8'h03: p03 <= cpu_do;
+			8'h07: p07 <= cpu_do;
+			8'h0B: p0b <= cpu_do;
+			8'h04: p04 <= cpu_do;
+			8'h05: p05 <= cpu_do;
+			8'h06: p06 <= cpu_do;
+			8'h08: p08 <= cpu_do;
+			8'h09: p09 <= cpu_do;
+			8'h0A: p0a <= cpu_do;
+			default: ;
+		endcase
 	end
 end
 
-assign beep = z80 ? (pfe[4] ^ snd_ff) : inte;
+assign spd = p0a[5] ? 2'd0 : cpu_speed;
+
+assign beep = snd_fe ^ snd_ff;
 
 // the interrupt of the Z80 Card: 50 Hz, the line is held until the Z80 takes it or 64 states of
 // 2.5 MHz later
@@ -264,22 +264,11 @@ always @(posedge clk) begin
 	else if (int_hold != 11'd0)
 		int_hold <= int_hold - 11'd1;
 end
-assign int_n = !(z80 && (int_hold != 11'd0 || key_irq || uart_irq));
-
-// the Monitor everywhere after reset
-reg ipl = 1'b1;
-always @(posedge clk)
-	if (run_reset)
-		ipl <= 1'b1;
-	else if (mem_rd && top_f800)
-		ipl <= 1'b0;
+assign int_n = int_hold == 11'd0;
 
 // ------------------------------------------------------------------ the PPIs
-wire [7:0] ppi4_do, ppi5_do, ppi6_do;
+wire [7:0] ppi4_do, ppi5_do;
 wire [7:0] rd_pb, rd_pc;
-wire rd_pa_in, us_pa_in;
-wire [7:0] rd_pa, us_pa, us_pb, us_pc;
-wire [7:0] ide_hi, ide_lo;
 wire [7:0] sram_do;
 wire [7:0] kb_scan, kb_ret;
 wire [3:0] kb_pc;
@@ -300,209 +289,90 @@ orion_ppi ppi_kbd (
 	.pa_in(), .pa_o(kb_scan), .pb_o(), .pc_o(kb_pc_o)
 );
 
-// the ROM disk: B and C are the address, A the byte; or the IDE (orion_ide), with A as an output
+// the ROM disk: B and C are the address, A the byte
 orion_ppi ppi_rd (
 	.clk(clk), .reset(run_reset), .a(a[1:0]), .wr(wr_p & wr_dev & sel_f5), .din(cpu_do), .dout(ppi5_do),
-	.pa_i(sram_do), .pb_i(ide_hi), .pc_i(ide_lo),
-	.pa_in(rd_pa_in), .pa_o(rd_pa), .pb_o(rd_pb), .pc_o(rd_pc)
-);
-
-// the user port: the IDE of DSDOS
-orion_ppi ppi_usr (
-	.clk(clk), .reset(run_reset), .a(a[1:0]), .wr(wr_p & mem_wr & sel_f6), .din(cpu_do), .dout(ppi6_do),
-	.pa_i(8'hFF), .pb_i(ide_hi), .pc_i(ide_lo),
-	.pa_in(us_pa_in), .pa_o(us_pa), .pb_o(us_pb), .pc_o(us_pc)
+	.pa_i(sram_do), .pb_i(8'hFF), .pc_i(8'hFF),
+	.pa_in(), .pa_o(), .pb_o(rd_pb), .pc_o(rd_pc)
 );
 
 // ------------------------------------------------------------------ the memory
-wire disp = z80 && !fb[7] && a[15:14] == 2'b00;
-wire [1:0] page_mask_hi = ram_size == 2'd0 ? 2'b00 : ram_size == 2'd1 ? 2'b01 : 2'b11;
-wire [3:0] bank = mbank & { page_mask_hi, 2'b11 };
-wire [3:0] page = disp ? { 2'b00, fb[3:2] } :
-                  (!full && a[15:12] == 4'hF) ? 4'd0 : bank;  // F000-F3FF: always page 0
-wire [15:0] ram_a = disp ? { fb[1:0], a[13:0] } : a;
-wire [21:0] ram_addr = { 2'd0, page[3:1], ram_a, page[0] };
+wire [7:0] work = o128 ? pf9 : p08;
+wire [5:0] page_mask = ram_size == 2'd0 ? 6'b000111 : ram_size == 2'd1 ? 6'b001111 : 6'b011111;
+wire low = a[15:14] == 2'b00;
+wire d16 = o128 && !fb[7] && low;              // the dispatcher of Orion-128
+wire win_on = low ? p0a[0] : a[15:14] == 2'b01 ? p0a[1] : a[15:14] == 2'b10 ? p0a[2] : 1'b0;
+wire [7:0] win_seg = low ? p04 : a[14] ? p05 : p06;
+wire fix_f = a[15:12] == 4'hF && (o128 ? !fb[5] : p0a[6]);   // segment 31
+wire [5:0] page = (d16 ? { 4'd0, fb[3:2] } : win_on ? win_seg[7:2] : fix_f ? 6'd7 : work[5:0]) & page_mask;
+wire [15:0] ram_a = d16 ? { fb[1:0], a[13:0] } : win_on ? { win_seg[1:0], a[13:0] } : a;
+wire [21:0] ram_addr = { 1'b0, page[4:1], ram_a, page[0] };
 
-wire sel_rom = !mem_wr && !full && (ipl || (top_f800 && !p767[1]));
+wire sel_rom1 = a[15:13] == 3'b000 && p0a[4];
+wire sel_rom2 = a[15:13] == 3'b001 && p0a[3];
 wire sel_rd = sel_f5 && a[1:0] == 2'd0;
 
-wire [21:0] sram_addr = sel_rom ? { 10'b1000000000, mhi, a[10:0] } :
-                        sel_rd  ? { 2'b01, pfe[3:2], pfe[1:0] | p767[4:3], rd_pc, rd_pb } :
+wire [21:0] sram_addr = sel_rd ? { 4'b1000, rd_page, rd_pc, rd_pb } :
+                        sel_rom1 ? { 9'b111111000, a[12:0] } :
+                        sel_rom2 ? { 6'b111110, p09[2:0], a[12:0] } :
                         ram_addr;
-wire sram_we = mem_wr && !sel_dev && (!top_f800 || p767[2]);
+// the area of the ports of Orion-128 is never written: F400-F7FF are the ports, F800-FFFF only latches
+wire sram_we = mem_wr && !sel_rom1 && !sel_rom2 && !(o128 && a[15:10] >= 6'b111101);
+
+// D1, D0 = 0: the BIOS looks for a hard disk, a floppy (an image is mounted)
+reg dip_fd = 1'b0, dip_hd = 1'b0;
+always @(posedge clk) begin
+	if (sdc_img_mounted[4]) dip_fd <= |sdc_img_size[31:0];
+	if (sdc_img_mounted[6]) dip_hd <= |sdc_img_size[31:0];
+end
+wire [7:0] dip = { boot == 2'd2, 1'b0, boot != 2'd0, 2'b00, ~kb_ms7007, ~dip_hd, ~dip_fd };
 
 always @* begin
 	cpu_di = 8'hFF;
 	if (inta && !mem_rd)      // the T80 shows M1 and IORQ together for a moment after reset
-		cpu_di = uart_irq ? 8'hFD : key_irq ? 8'hFB : 8'hFF;
-	else if (rd_dev && sel_f76 && a[3:0] >= 4'h2 && a[3:0] <= 4'h9)
-		cpu_di = r76;
-	else if (io_rd && io_f4)
+		cpu_di = im2 ? 8'h00 : 8'hFF;   // the table of vectors starts at I:00; IM 0 is RST 38
+	else if (rd_dev && sel_f4)
 		cpu_di = ppi4_do;
-	else if (io_rd && io_f5)
+	else if (rd_dev && sel_f5)
 		cpu_di = ppi5_do;
+	else if (rd_dev && sel_rtc_a)
+		cpu_di = rtc_ar;
+	else if (rd_dev && sel_rtc_d)
+		cpu_di = rtc_do;
+	else if (rd_dev && sel_fdc)
+		cpu_di = phys_now ? phys_do : fdc_do;
+	else if (rd_dev && sel_rgu)
+		cpu_di = { 6'd0, phys_now ? phys_drq : fdc_drq, 1'b0 };
 	else if (mem_rd) begin
-		if (sel_rom) cpu_di = sram_do;
-		else if (sel_f4) cpu_di = ppi4_do;
-		else if (sel_f5) cpu_di = ppi5_do;
-		else if (sel_f6) cpu_di = ppi6_do;
-		else if (sel_rtc_a) cpu_di = rtc_ar;
-		else if (sel_rtc_d) cpu_di = rtc_do;
-		else if (sel_ay_mem && a[0]) cpu_di = ay_do;
-		else if (sel_fdc) cpu_di = phys_now ? phys_do : fdc_do;
-		else if (sel_rgu) cpu_di = { 6'd0, phys_now ? phys_drq : fdc_drq, 1'b0 };
-		else if (!sel_dev) cpu_di = sram_do;
+		if (!sel_dev) cpu_di = sram_do;
 	end
-	else if (io_rd && a[7:0] == 8'hFB)
-		cpu_di = fb;
-	else if (io_rd && ay_io && a[14])
-		cpu_di = ay_do;
-end
-
-// ------------------------------------------------------------------ Orion-2010: F762..F76A
-wire w76 = wr_p && wr_dev && sel_f76;
-reg key_ie = 1'b0;            // F766 D6
-reg [7:0] scan_key = 8'd0;
-reg [1:0] key_pref = 2'd0;    // F769 D7..6: 1 E0, 2 a release
-reg kb_ext = 1'b0, kb_rel = 1'b0;
-reg kb_upd_d = 1'b0;
-reg [7:0] dac_r = 8'd0;
-wire [7:0] mmc_do;
-reg rd76_d = 1'b0;
-
-always @(posedge clk) begin
-	kb_upd_d <= kb_scancode_upd;
-	spd_osd <= cpu_speed;
-	if (spd_osd != cpu_speed)
-		spd <= cpu_speed;
-	if (run_reset) begin
-		p767 <= 8'd0;
-		key_ie <= 1'b0;
-		key_irq <= 1'b0;
-		dac_r <= 8'd0;
-		if (reset)
-			spd <= cpu_speed;
-	end
-	else begin
-		if (inta)
-			key_irq <= 1'b0;
-		if (w76 && a[3:0] == 4'h6)
-			key_ie <= cpu_do[6];
-		if (w76 && a[3:0] == 4'h7) begin
-			p767[6:3] <= cpu_do[6:3];
-			spd <= cpu_do[6:5] == 2'b10 ? 2'd0 : cpu_do[6:5] == 2'b00 ? 2'd1 : 2'd2;
-			if (io_wr)
-				p767[2:0] <= cpu_do[2:0];
-		end
-		if (w76 && a[3:0] == 4'hA)
-			dac_r <= cpu_do;
-	end
-	// the scancodes: E0 and F0 are prefixes, a code is taken with them
-	if (kb_scancode_upd != kb_upd_d) begin
-		if (kb_scancode == 8'hE0)
-			kb_ext <= 1'b1;
-		else if (kb_scancode == 8'hF0)
-			kb_rel <= 1'b1;
-		else begin
-			scan_key <= kb_scancode;
-			key_pref <= { kb_rel, kb_ext & ~kb_rel };
-			kb_ext <= 1'b0;
-			kb_rel <= 1'b0;
-			if (key_ie && z80 && !run_reset)
-				key_irq <= 1'b1;
-		end
-	end
-end
-assign dac = dac_r;
-
-// the UART: a byte of the mcu is there when its index changes, until a read of F764; a write of F764
-// sends a byte (the mcu queues it, the transmitter is always ready); F765 D6 enables the interrupt of
-// a received byte (vector FD). The speed bits are not used: the firmware has its own.
-reg [7:0] uart_idx_d = 8'd0;
-reg uart_rdy = 1'b0;
-reg uart_ie = 1'b0;
-reg rd764_d = 1'b0;
-wire rd764 = rd_dev && sel_f76 && a[3:0] == 4'h4;
-always @(posedge clk) begin
-	uart_idx_d <= uart_rx_idx;
-	rd764_d <= rd764;
-	if (run_reset) begin
-		uart_rdy <= 1'b0;
-		uart_ie <= 1'b0;
-		uart_irq <= 1'b0;
-	end
-	else begin
-		if (uart_rx_idx != uart_idx_d) begin
-			uart_rdy <= 1'b1;
-			if (uart_ie && z80)
-				uart_irq <= 1'b1;
-		end
-		else if (rd764_d && !rd764)
-			uart_rdy <= 1'b0;
-		if (w76 && a[3:0] == 4'h5)
-			uart_ie <= cpu_do[6];
-		if (inta && !mem_rd)
-			uart_irq <= 1'b0;
-	end
-end
-assign uart_tx_data = cpu_do;
-assign uart_tx_wr = w76 && a[3:0] == 4'h4;
-
-always @* begin
-	case (a[3:0])
-		4'h2: r76 = 8'hFF;
-		4'h3: r76 = mmc_do;
-		4'h4: r76 = uart_rx_data;                 // UART data
-		4'h5: r76 = { 1'b0, uart_rdy, 6'h3F };    // UART: D7 0 the transmitter ready, D6 a byte received
-		4'h7: r76 = { p767[7], p767_turbo, p767[4:3], p767[2:0] };
-		4'h8: r76 = scan_key;
-		4'h9: r76 = { key_pref, 6'd0 };
-		default: r76 = 8'hFF;
+	else if (io_rd && sel_ide)
+		cpu_di = ide_do;
+	else if (io_rd) case (ioa)
+		8'h00: cpu_di = dip;
+		8'h01: cpu_di = p01;
+		8'h02: cpu_di = p02;
+		8'h04: cpu_di = p04;
+		8'h05: cpu_di = p05;
+		8'h06: cpu_di = p06;
+		8'h08: cpu_di = p08;
+		8'h09: cpu_di = p09;
+		8'h03: cpu_di = p03;
+		8'h07: cpu_di = p07;
+		8'h0A: cpu_di = p0a;
+		8'h0B: cpu_di = p0b;
+		default: if (ay_sel_reg) cpu_di = ay_do;
 	endcase
 end
-
-// the SD card: a read of F763 is taken at its end
-wire rd76 = rd_dev && sel_f76 && a[3:0] == 4'h3;
-always @(posedge clk)
-	rd76_d <= rd76;
-wire mmc_rd, mmc_wr;
-wire [31:0] mmc_lba;
-wire [7:0] mmc_byte_out;
-reg mmc_own = 1'b0;            // the request of slot 6 in img_sdc is that of the SD card
-
-orion_sd sd (
-	.clk(clk),
-	.reset(run_reset),
-	.cs_wr(w76 && a[3:0] == 4'h2),
-	.d_wr(w76 && a[3:0] == 4'h3),
-	.din(cpu_do),
-	.dout(mmc_do),
-	.img_mounted(sdc_img_mounted[6]),
-	.img_size(sdc_img_size[31:0]),
-	.hd_rd(mmc_rd),
-	.hd_wr(mmc_wr),
-	.hd_lba(mmc_lba),
-	.hd_busy(sdc_busy && sdc_slot == 3'd6 && mmc_own),
-	.hd_done(sdc_done && sdc_slot == 3'd6 && mmc_own),
-	.hd_byte_in_strobe(sdc_in_strobe && sdc_slot == 3'd6 && mmc_own),
-	.hd_byte_addr(sdc_byte_addr),
-	.hd_byte_in_data(sdc_in_data),
-	.hd_byte_out_data(mmc_byte_out)
-);
-always @(posedge clk)
-	if (mmc_rd || mmc_wr)
-		mmc_own <= 1'b1;
-	else if (hd_rd[0] || hd_wr[0])
-		mmc_own <= 1'b0;
 
 // ------------------------------------------------------------------ the clock
 // the registers of the mcu (kg_mcu_rtc): a write is a clock long
 always @(posedge clk)
-	if (wr_p && mem_wr && sel_rtc_a)
+	if (wr_p && wr_dev && sel_rtc_a)
 		rtc_ar <= cpu_do;
 assign rtc_a = rtc_ar;
 assign rtc_di = cpu_do;
-assign rtc_cs = wr_p && mem_wr && sel_rtc_d;
+assign rtc_cs = wr_p && wr_dev && sel_rtc_d;
 assign rtc_wr_n = !rtc_cs;
 
 // ------------------------------------------------------------------ AY
@@ -515,8 +385,8 @@ always @(posedge clk) begin
 end
 
 reg [3:0] ay_reg = 4'd0;
-wire ay_wr_reg = wr_p && ((io_wr && ay_io && a[14]) || (mem_wr && sel_ay_mem && a[0]));
-wire ay_wr_data = wr_p && ((io_wr && ay_io && !a[14]) || (mem_wr && sel_ay_mem && !a[0]));
+wire ay_wr_reg = wr_p && ay_sel_reg;
+wire ay_wr_data = wr_p && ay_sel_data;
 always @(posedge clk)
 	if (run_reset)
 		ay_reg <= 4'd0;
@@ -552,44 +422,40 @@ wire sdc_hd = sdc_slot[2:1] == 2'b11;
 orion_ide ide (
 	.clk(clk),
 	.reset(run_reset),
-	.f5_on(!rd_pa_in),
-	.f5_ctl(rd_pa),
-	.f5_hi(rd_pb),
-	.f5_lo(rd_pc),
-	.f6_on(!us_pa_in),
-	.f6_ctl(us_pa),
-	.f6_hi(us_pb),
-	.f6_lo(us_pc),
-	.do_hi(ide_hi),
-	.do_lo(ide_lo),
+	.a(ioa),
+	.rd(io_rd),
+	.wr(io_wr),
+	.din(cpu_do),
+	.dout(ide_do),
+	.sel(sel_ide),
 	.img_mounted(sdc_img_mounted[7:6]),
 	.img_size(sdc_img_size),
 	.sdc_rd(hd_rd),
 	.sdc_wr(hd_wr),
 	.sdc_sector(hd_sector),
-	.sdc_busy(sdc_busy && sdc_hd && !(sdc_slot == 3'd6 && mmc_own)),
-	.sdc_done(sdc_done && sdc_hd && !(sdc_slot == 3'd6 && mmc_own)),
-	.sdc_error(sdc_error && sdc_hd && !(sdc_slot == 3'd6 && mmc_own)),
-	.sdc_byte_in_strobe(sdc_in_strobe && sdc_hd && !(sdc_slot == 3'd6 && mmc_own)),
+	.sdc_busy(sdc_busy && sdc_hd),
+	.sdc_done(sdc_done && sdc_hd),
+	.sdc_error(sdc_error && sdc_hd),
+	.sdc_byte_in_strobe(sdc_in_strobe && sdc_hd),
 	.sdc_byte_addr(sdc_byte_addr),
 	.sdc_byte_in_data(sdc_in_data),
 	.sdc_byte_out_data(hd_byte_out)
 );
 
 // ------------------------------------------------------------------ the disk drive
-// KR1818VG93 at F700-F703, F710-F713 (an incomplete decoder), the control register at F704, F714,
-// F720: D0 the drive, D4 the side, inverted. Read, the control register shows DRQ in D1.
-// F708, F718 is the same register of the controller by M. Korotkin: D0 the side, D1 the drive
-// (DSDOS writes there when F704 does not read FF).
-assign sel_fdc = sel_f7 && a[7:5] == 3'd0 && a[3:2] == 2'd0;
-assign sel_rgu = sel_f7 && (a[7:0] == 8'h20 || (a[7:5] == 3'd0 && a[3:0] == 4'd4));
+// KR1818VG93 at 10-13 and, in the mode Orion-128, F700-F703, F710-F713 (an incomplete decoder), the
+// control register at 14, F704, F714, F720: D0 the drive, D4 the side, inverted. Read, the control
+// register shows DRQ in D1. F708, F718 is the same register of the controller by M. Korotkin: D0 the
+// side, D1 the drive (DSDOS writes there when F704 does not read FF).
+assign sel_fdc = (sel_f7 && a[7:5] == 3'd0 && a[3:2] == 2'd0) || (io_any && ioa[7:2] == 6'b000100);
+assign sel_rgu = (sel_f7 && (a[7:0] == 8'h20 || (a[7:5] == 3'd0 && a[3:0] == 4'd4))) || (io_any && ioa == 8'h14);
 wire sel_rgk = sel_f7 && a[7:5] == 3'd0 && a[3:0] == 4'd8;
 
 reg [7:0] rgu = 8'd0;
 always @(posedge clk)
 	if (run_reset)
 		rgu <= 8'd0;
-	else if (wr_p && mem_wr && sel_rgu)
+	else if (wr_p && wr_dev && sel_rgu)
 		rgu <= cpu_do;
 	else if (wr_p && mem_wr && sel_rgk)
 		rgu <= { 3'd0, ~cpu_do[0], 3'd0, cpu_do[1] };
@@ -617,7 +483,7 @@ generate
 	if (PHYS_FDD) begin : g_phys
 		orion_fdd_phys phys (
 			.clk(clk), .reset(run_reset),
-			.sel(sel_fdc & phys_now), .a(a[1:0]), .rd(mem_rd), .wr(mem_wr), .din(cpu_do),
+			.sel(sel_fdc & phys_now), .a(a[1:0]), .rd(rd_dev), .wr(wr_dev), .din(cpu_do),
 			.dout(phys_do), .drq(phys_drq), .hold(phys_hold), .ds(phys_ds), .side(~rgu[4]),
 			.FDC_INDEX(FDC_INDEX), .FDC_DRIVE(FDC_DRIVE), .FDC_MOTOR(FDC_MOTOR), .FDC_DIR(FDC_DIR),
 			.FDC_STEP(FDC_STEP), .FDC_WDATA(FDC_WDATA), .FDC_WGATE(FDC_WGATE), .FDC_TR00(FDC_TR00),
@@ -653,8 +519,8 @@ wd1793 #(.RWMODE(1), .EDSK(0)) fdc (
 	.ce(fdc_div == 3'd0),
 	.reset(run_reset),
 	.io_en(sel_fdc & ~phys_now),
-	.rd(mem_rd),
-	.wr(mem_wr),
+	.rd(rd_dev),
+	.wr(wr_dev),
 	.addr(a[1:0]),
 	.din(cpu_do),
 	.dout(fdc_do),
@@ -714,10 +580,9 @@ img_sdc #(
 	.img_q_ack(img_q_ack),
 	.sdc_img_mounted(sdc_img_mounted),
 	.sdc_img_size(sdc_img_size),
-	.sdc_rd({ hd_rd[1], hd_rd[0] | mmc_rd, sdc_rd_b, sdc_rd_a, 4'd0 }),
-	.sdc_wr({ hd_wr[1], hd_wr[0] | mmc_wr, sdc_wr_b, sdc_wr_a, 4'd0 }),
-	.sdc_sector((sdc_rd_a || sdc_wr_a) ? sdc_sector_a : (sdc_rd_b || sdc_wr_b) ? sdc_sector_b :
-		(mmc_rd || mmc_wr) ? mmc_lba : hd_sector),
+	.sdc_rd({ hd_rd, sdc_rd_b, sdc_rd_a, 4'd0 }),
+	.sdc_wr({ hd_wr, sdc_wr_b, sdc_wr_a, 4'd0 }),
+	.sdc_sector((sdc_rd_a || sdc_wr_a) ? sdc_sector_a : (sdc_rd_b || sdc_wr_b) ? sdc_sector_b : hd_sector),
 	.sdc_busy(sdc_busy),
 	.sdc_done(sdc_done),
 	.sdc_error(sdc_error),
@@ -725,7 +590,7 @@ img_sdc #(
 	.sdc_byte_in_strobe(sdc_in_strobe),
 	.sdc_byte_addr(sdc_byte_addr),
 	.sdc_byte_in_data(sdc_in_data),
-	.sdc_byte_out_data((sdc_slot == 3'd6 && mmc_own) ? mmc_byte_out : sdc_hd ? hd_byte_out :
+	.sdc_byte_out_data(sdc_hd ? hd_byte_out :
 		sdc_slot == 3'd5 ? sdc_byte_out_b : sdc_byte_out_a),
 	.active()
 );
@@ -828,6 +693,7 @@ orion_loader loader (
 	.file_data(file_data),
 	.file_wr(file_wr),
 	.tick(tick == 20'd0),
+	.clearing(clearing),
 	.aux_req(ld_req),
 	.aux_we(ld_we),
 	.aux_addr(ld_addr),
@@ -837,6 +703,8 @@ orion_loader loader (
 );
 
 wire vid_req, vid_valid;
+// the palette of the Multicard, ports E0..E2 (orion_pal in each video)
+wire [2:0] pal_we = (wr_p && io_wr && ioa[7:2] == 6'b111000) ? (ioa[1:0] == 2'd0 ? 3'b001 : ioa[1:0] == 2'd1 ? 3'b010 : ioa[1:0] == 2'd2 ? 3'b100 : 3'b000) : 3'b000;
 wire [20:0] vid_addr;
 wire [15:0] vid_dout;
 
@@ -847,11 +715,13 @@ wire v6_hs, v6_vs, v6_de, v5_hs, v5_vs, v5_de;
 
 orion_video video (
 	.clk(clk),
-	.vmode(vmode[3:0]),
+	.vmode(vmode[4:0]),
 	.vpage(pfa[1:0]),
 	.w512(pfa[7]),
 	.w480(vmode[7]),
 	.pcolor(pfc),
+	.pal_we(pal_we),
+	.pal_d(cpu_do),
 	.vid_req(v6_req),
 	.vid_addr(v6_addr),
 	.vid_dout(vid_dout),
@@ -866,11 +736,13 @@ orion_video_576 video576 (
 	.clk(clk),
 	.clk_pix(clk_pix),
 	.en(pal),
-	.vmode(vmode[3:0]),
+	.vmode(vmode[4:0]),
 	.vpage(pfa[1:0]),
 	.w512(pfa[7]),
 	.w480(vmode[7]),
 	.pcolor(pfc),
+	.pal_we(pal_we),
+	.pal_d(cpu_do),
 	.vid_req(v5_req),
 	.vid_addr(v5_addr),
 	.vid_dout(vid_dout),

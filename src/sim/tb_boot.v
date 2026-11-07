@@ -1,11 +1,11 @@
 `timescale 1ns / 1ps
 `default_nettype wire
 
-// orion_system with a model of the SRAM (two lanes of 2M x 8, /OE low, as msx tb_sys), for sim_boot.
+// orionpro_system with a model of the SRAM (two lanes of 2M x 8, /OE low, as msx tb_sys), for sim_boot.
 module tb_boot (
 	input wire clk,
 	input wire reset,
-	input wire cpu_z80,
+	input wire [1:0] boot,
 	input wire [1:0] cpu_speed,
 	input wire [1:0] ram_size,
 	input wire kb_ms7007,
@@ -44,21 +44,40 @@ wire [20:0] MA;
 wire [15:0] MD;
 wire [1:0] MWR_N;
 
-orion_system sys (
-	.clk(clk), .reset(reset), .cpu_z80(cpu_z80), .cpu_speed(cpu_speed), .ram_size(ram_size), .kb_ms7007(kb_ms7007),
+// the clock registers as kg_mcu_rtc keeps them: a RAM, read a clock after the address
+wire [7:0] rtc_a, rtc_di;
+wire rtc_cs, rtc_wr_n;
+reg [7:0] rtc_ram [0:255];
+reg [7:0] rtc_do = 8'd0;
+integer rtc_i;
+initial for (rtc_i = 0; rtc_i < 256; rtc_i = rtc_i + 1) rtc_ram[rtc_i] = 8'd0;
+always @(posedge clk) begin
+	if (rtc_cs && !rtc_wr_n) rtc_ram[rtc_a] <= rtc_di;
+	rtc_do <= rtc_ram[rtc_a];
+end
+
+orionpro_system sys (
+	.clk(clk), .reset(reset), .boot(boot), .cpu_speed(cpu_speed), .ram_size(ram_size), .kb_ms7007(kb_ms7007),
 	.rom_active(rom_active), .rom_addr(rom_addr), .rom_data(rom_data), .rom_wr(rom_wr),
 	.file_active(file_active), .file_slot(file_slot), .file_addr(file_addr), .file_data(file_data), .file_wr(file_wr),
 	.img_mounted(img_mounted), .img_size(img_size), .img_wp(8'd0), .img_data_wr(img_data_wr),
 	.img_data_addr(img_data_addr), .img_data(img_data), .img_result_wr(img_result_wr), .img_result(img_result),
 	.img_sum(img_sum), .img_q_wr(img_q_wr), .img_q_di(img_q_di), .img_q_ack(img_q_ack),
 	.kb_scancode(kb_scancode), .kb_scancode_upd(kb_scancode_upd),
-	.joy(13'd0), .mon_hi(1'b0), .uart_rx_data(8'd0), .uart_rx_idx(8'd0), .uart_tx_data(), .uart_tx_wr(), .img_phys_wr(1'b0), .img_phys(16'd0), .FDC_INDEX(1'b0), .FDC_TR00(1'b0), .FDC_WPRT(1'b0), .FDC_RDATA(1'b0), .rtc_a(), .rtc_di(), .rtc_do(8'h00), .rtc_cs(), .rtc_wr_n(),
-	.clk_pix(clk), .pal(1'b0), .rgb(rgb), .hs(hs), .vs(vs), .de(de), .beep(beep), .ay_sound(), .dac(), .tape_in(1'b1), .tape_out(),
+	.joy(13'd0), .img_phys_wr(1'b0), .img_phys(16'd0), .FDC_INDEX(1'b0), .FDC_TR00(1'b0), .FDC_WPRT(1'b0), .FDC_RDATA(1'b0), .rtc_a(rtc_a), .rtc_di(rtc_di), .rtc_do(rtc_do), .rtc_cs(rtc_cs), .rtc_wr_n(rtc_wr_n),
+	.clk_pix(clk), .pal(1'b0), .rgb(rgb), .hs(hs), .vs(vs), .de(de), .beep(beep), .ay_sound(), .tape_in(1'b1), .tape_out(),
 	.MA(MA), .MD(MD), .MWR_N(MWR_N)
 );
 
 reg [7:0] lo [0:2097151];
 reg [7:0] hi [0:2097151];
+// +rnd: the SRAM as another core left it, not zeros
+integer ri;
+initial if ($test$plusargs("rnd"))
+	for (ri = 0; ri < 2097152; ri = ri + 1) begin
+		lo[ri] = $random;
+		hi[ri] = $random;
+	end
 assign MD = (MWR_N == 2'b11) ? { hi[MA], lo[MA] } : 16'bz;
 assign dbg_q = dbg_addr[0] ? hi[dbg_addr[21:1]] : lo[dbg_addr[21:1]];
 
@@ -67,44 +86,37 @@ always @(posedge clk) begin
 	if (!MWR_N[1]) hi[MA] <= MD[15:8];
 end
 
-// +fdc: the writes to the floppy controller and the first reads of each kind
-reg fdc_log = 1'b0;
-reg ide_log = 1'b0;
-reg ide_s = 1'b0;
-initial ide_log = $test$plusargs("ide");
-always @(posedge clk)
-	ide_s <= sys.ide.strobe;
-always @(posedge clk)
-	if (ide_log && sys.ide.strobe && !ide_s)
-		$display("ide %s a%d cs %b do %04x di %04x bsy %b", sys.ide.ctl[6] ? "rd" : "wr", sys.ide.ctl[2:0], sys.ide.ctl[4:3], sys.ide.dout, sys.ide.dout_wr, sys.ide.ata.status[7]);
-initial fdc_log = $test$plusargs("fdc");
 // +bus: the first memory and port accesses of the CPU
 reg bus_log = 1'b0;
 initial bus_log = $test$plusargs("bus");
 integer bus_n = 0;
+// +busat=MS: 100000 accesses from that time on; +iolog: every port and F400-F7FF access
+integer bus_at = 0, bus_clk = 0;
+reg io_log = 1'b0;
+initial begin
+	if (!$value$plusargs("busat=%d", bus_at)) bus_at = 0;
+	io_log = $test$plusargs("iolog");
+end
 reg bus_d = 1'b0;
+reg [15:0] bus_a = 16'd0;
+reg [7:0] bus_di = 8'd0, bus_do = 8'd0;
+reg [2:0] bus_k = 3'd0;
+wire bus_on = sys.mem_rd | sys.mem_wr | sys.io_rd | sys.io_wr | sys.inta;
+// logged at the end of the access: di is what the CPU took
 always @(posedge clk) begin
-	bus_d <= sys.mem_rd | sys.mem_wr | sys.io_rd | sys.io_wr | sys.inta;
-	if (bus_log && bus_n < 400 && (sys.mem_rd | sys.mem_wr | sys.io_rd | sys.io_wr | sys.inta) && !bus_d) begin
+	bus_clk = bus_clk + 1;
+	bus_d <= bus_on;
+	if (bus_on) begin
+		bus_a <= sys.a;
+		bus_di <= sys.cpu_di;
+		bus_do <= sys.cpu_do;
+		bus_k <= sys.inta ? 3'd0 : sys.mem_rd ? 3'd1 : sys.mem_wr ? 3'd2 : sys.io_rd ? 3'd3 : 3'd4;
+	end
+	if (bus_d && !bus_on &&
+	    ((bus_log && bus_n < 400) || (bus_at != 0 && bus_clk >= bus_at * 40000 && bus_n < 100000) ||
+	     (io_log && (bus_k >= 3'd3 || bus_a[15:10] == 6'b111101 || (bus_a[15:2] == 14'h3FFF))))) begin
 		bus_n = bus_n + 1;
-		$display("%s %04x di %02x do %02x ki %b ih %0d ie %b", sys.inta ? "ia" : sys.mem_rd ? "mr" : sys.mem_wr ? "mw" : sys.io_rd ? "ir" : "iw", sys.a, sys.cpu_di, sys.cpu_do, sys.key_irq, sys.int_hold, sys.key_ie);
+		$display("%s %04x di %02x do %02x t %0d", bus_k == 0 ? "ia" : bus_k == 1 ? "mr" : bus_k == 2 ? "mw" : bus_k == 3 ? "ir" : "iw", bus_a, bus_di, bus_do, bus_clk / 400);
 	end
 end
-always @(posedge clk)
-	if (fdc_log && sys.wr_p && sys.mem_wr && (sys.sel_fdc || sys.sel_rgu))
-		$display("fdc wr %04x = %02x", sys.a, sys.cpu_do);
-
-// +sd: the bytes of the SD card (orion_sd), the byte sent and the one the card gave
-reg sd_log = 1'b0;
-initial sd_log = $test$plusargs("sd");
-reg [7:0] sd_out = 8'hFF;
-always @(posedge clk) begin
-	if (sys.sd.d_wr && sys.sd.bitcnt == 3'd0)
-		sd_out <= sys.sd.cs_n ? 8'hFF : sys.sd.out;
-	if (sd_log && sys.sd.xfer)
-		$display("sd %02x -> %02x cs_n %b st %0d", sys.sd.tx, sd_out, sys.sd.cs_n, sys.sd.state);
-	if (sd_log && sys.sd.cs_wr)
-		$display("sd cs %02x", sys.cpu_do);
-end
-
 endmodule

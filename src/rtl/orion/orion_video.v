@@ -18,17 +18,23 @@
  The screen address {~vpage, column, row}: screen 0 at C000. vmode D2..0 as written to port F8:
  000 mono, 001 mono palette 2, 01x blank, 100 / 101 four colours, 11x sixteen colours by cells
  (pixel 1: low tetrade of the colour byte, 0: high), with D3 the colour byte is the port FC
- (pseudocolour). Colour bits are IRGB. The sources differ in
- the palettes 2 and the brightness, see docs/BACKLOG.md.
+ (pseudocolour). Colour bits are IRGB, they go through the palette (orion_pal).
+
+ With D4 (the modes of the Orion-PRO, D2 = 0 RGB, 1 RGBI) a point has one bit of each plane: R and B
+ in the word at the base, G and I in the word 4000 above it, two screens only (bit 0 of the screen
+ number is taken as 1). So a cell has two reads, at its clocks 0 and 4: a wide cell of 12 clocks
+ gets the second word by clock 10.
 */
 
 module orion_video (
 	input wire clk,
-	input wire [3:0] vmode,
+	input wire [4:0] vmode,
 	input wire [1:0] vpage,
 	input wire w512,
 	input wire w480,
 	input wire [7:0] pcolor,
+	input wire [2:0] pal_we,
+	input wire [7:0] pal_d,
 
 	output wire vid_req,
 	output wire [20:0] vid_addr,
@@ -91,34 +97,53 @@ wire cell_start = ph == 4'd0;
 wire live = run || (line_start && in_y);
 wire [6:0] col_now = line_start ? 7'd0 : col;
 
-assign vid_req = live && cell_start && col_now < cells;
-assign vid_addr = { 5'd0, ~vpage, col_now[5:0], row };
+wire ega = vmode[4];
+wire second = ega && ph == 4'd4;
+// orion_sram takes the address when the slot starts, up to two clocks after the request: it holds
+wire [1:0] base = ega ? { ~vpage[1], ph >= 4'd4 } : ~vpage;
+assign vid_req = live && (cell_start || second) && col_now < cells;
+assign vid_addr = { 5'd0, base, col_now[5:0], row };
 
-reg [15:0] hold = 16'd0;
-always @(posedge clk)
-	if (vid_valid)
-		hold <= vid_dout;
+reg [15:0] hold = 16'd0, hold2 = 16'd0;
+reg got = 1'b0;               // the first word of the cell is in
+always @(posedge clk) begin
+	if (cell_start)
+		got <= 1'b0;
+	if (vid_valid) begin
+		got <= 1'b1;
+		if (got)
+			hold2 <= vid_dout;
+		else
+			hold <= vid_dout;
+	end
+end
 
 // the word asked in cell n shows in cell n + 1
 wire show = live && col_now != 7'd0;
 wire shift = wide ? (ph == 4'd2 || ph == 4'd3 || ph == 4'd5 || ph == 4'd6 || ph == 4'd8 || ph == 4'd9 || ph == 4'd11)
                   : (ph[0] == 1'b0 && ph != 4'd0);
-reg [7:0] pix = 8'd0, cpl = 8'd0, attr = 8'd0;
+reg [7:0] pix = 8'd0, cpl = 8'd0, attr = 8'd0, gpl = 8'd0, ipl = 8'd0;
 always @(posedge clk) begin
 	if (cell_start) begin
 		pix <= show ? hold[7:0] : 8'd0;
 		cpl <= show ? hold[15:8] : 8'd0;
 		attr <= !show ? 8'd0 : vmode[3] ? pcolor : hold[15:8];
+		gpl <= show ? hold2[7:0] : 8'd0;
+		ipl <= show ? hold2[15:8] : 8'd0;
 	end
 	else if (shift) begin
 		pix <= { pix[6:0], 1'b0 };
 		cpl <= { cpl[6:0], 1'b0 };
+		gpl <= { gpl[6:0], 1'b0 };
+		ipl <= { ipl[6:0], 1'b0 };
 	end
 end
 
 reg [3:0] code;
 always @* begin
-	case (vmode[2:0])
+	if (vmode[4])
+		code = { vmode[2] & ipl[7], pix[7], gpl[7], cpl[7] };
+	else case (vmode[2:0])
 		3'b000: code = pix[7] ? 4'hA : 4'h0;
 		3'b001: code = pix[7] ? 4'hE : 4'h9;
 		3'b100: case ({ pix[7], cpl[7] })
@@ -138,7 +163,8 @@ always @* begin
 	endcase
 end
 
-wire [7:0] level = code[3] ? 8'hFF : 8'hAA;
+wire [23:0] pal_rgb;
+orion_pal pal (.clk(clk), .we(pal_we), .din(pal_d), .idx({ code[1], code[2], code[0], code[3] }), .rgb(pal_rgb));
 
 // the pixel of hcnt is out two clocks later: the shift register, then rgb
 reg de_d = 1'b0, hs_d = 1'b0, vs_d = 1'b0;
@@ -149,7 +175,7 @@ always @(posedge clk) begin
 	de <= de_d;
 	hs <= hs_d;
 	vs <= vs_d;
-	rgb <= { code[2] ? level : 8'd0, code[1] ? level : 8'd0, code[0] ? level : 8'd0 };
+	rgb <= pal_rgb;
 end
 
 endmodule

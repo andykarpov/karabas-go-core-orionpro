@@ -387,7 +387,7 @@ begin
 			Fp <= (others => '1');
 			I <= (others => '0');
 			R <= (others => '0');
-			SP <= (others => '1');
+			SP       <= (others => '0');  -- karabas: as OriZEmu: the ROM1 of the Orion-PRO does a CALL before LD SP, its return address must fall on COLDST (FFFF), so that every reset is a cold start and the positions of the menus are cleared
 			Alternate <= '0';
 
 			Read_To_Reg_r <= "00000";

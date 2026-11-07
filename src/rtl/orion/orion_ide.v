@@ -4,31 +4,25 @@
 /*
  orion_ide.v
 
- The IDE of S. Akimov on a KR580VV55, "the people's" controller: port A the control lines, C the
- low byte of the data, B the high byte, on the images of the mcu (hdf_ata of the modules). The
- Monitors M35zrkh and AltairDOS have it at F500, where it shares the PPI with the ROM disk, DSDOS at
- F600. Both PPIs are wired here, no OSD item: a PPI with port A as an output drives the lines, and
- the ROM disk needs that port as an input. Port A: D2..0 the register, D3 CS0, D4 CS1, D5 WR, D6 RD,
- D7 RESET, all active high (the inverters of the board).
-
- The software drops a strobe and the register in one write of port A, hdf_ata takes the end of the
- strobe a clock later, so the register is held for that clock.
+ The IDE of the Orion-PRO on the ports of the Z80, on the images of the mcu (hdf_ata of the modules):
+   56     alternate status / device control (CS1, register 6)
+   57     the high byte of the data register, a latch
+   58     the low byte of the data register: a read takes the word and keeps its high byte for 57, a
+          write sends the word with the high byte written to 57 before it
+   59-5F  the registers 1..7 (CS0)
+ hdf_ata acts at the end of a strobe, the address of the Z80 holds a moment longer.
 */
 
 module orion_ide (
 	input wire clk,
 	input wire reset,            // the machine
 
-	input wire f5_on,            // port A of the PPI is an output
-	input wire [7:0] f5_ctl,
-	input wire [7:0] f5_hi,
-	input wire [7:0] f5_lo,
-	input wire f6_on,
-	input wire [7:0] f6_ctl,
-	input wire [7:0] f6_hi,
-	input wire [7:0] f6_lo,
-	output wire [7:0] do_hi,     // ports B and C of both PPIs, as inputs
-	output wire [7:0] do_lo,
+	input wire [7:0] a,          // the port
+	input wire rd,               // IN
+	input wire wr,               // OUT
+	input wire [7:0] din,
+	output wire [7:0] dout,
+	output wire sel,             // the port is one of these
 
 	// two indices of img_sdc, [0] master, [1] slave
 	input wire [1:0] img_mounted,
@@ -45,22 +39,24 @@ module orion_ide (
 	output wire [7:0] sdc_byte_out_data
 );
 
-wire [7:0] ctl = f5_on ? f5_ctl : f6_on ? f6_ctl : 8'h00;
-wire [15:0] dout_wr = f5_on ? { f5_hi, f5_lo } : { f6_hi, f6_lo };
-wire strobe = ctl[6] | ctl[5];
+wire cs0 = a[7:3] == 5'b01011;   // 58-5F
+wire cs1 = a == 8'h56;
+wire hi = a == 8'h57;
+assign sel = cs0 | cs1 | hi;
 
-reg strobe_d = 1'b0;
-reg [4:0] held = 5'd0;
+wire ata_rd = rd & (cs0 | cs1);
+wire ata_wr = wr & (cs0 | cs1);
+
+wire [15:0] ata_do;
+reg [7:0] hi_wr = 8'd0, hi_rd = 8'd0;
 always @(posedge clk) begin
-	strobe_d <= strobe;
-	if (strobe)
-		held <= ctl[4:0];
+	if (wr && hi)
+		hi_wr <= din;
+	if (rd && a == 8'h58)
+		hi_rd <= ata_do[15:8];
 end
-wire [4:0] bus = (strobe_d && !strobe) ? held : ctl[4:0];
 
-wire [15:0] dout;
-assign do_hi = dout[15:8];
-assign do_lo = dout[7:0];
+assign dout = hi ? hi_rd : ata_do[7:0];
 
 hdf_ata #(
 	.DEF_HEADS(5'd16),
@@ -69,16 +65,16 @@ hdf_ata #(
 ) ata (
 	.clk(clk),
 	.reset(1'b0),
-	.ata_reset(reset | ctl[7]),
+	.ata_reset(reset),
 	.dev0_en(1'b1),
 	.dev(),
 	.dev1_here(),
-	.a(bus[2:0]),
-	.cs_n(~bus[4:3]),
-	.rd_n(~ctl[6]),
-	.wr_n(~ctl[5]),
-	.din(dout_wr),
-	.dout(dout),
+	.a(cs1 ? 3'd6 : a[2:0]),
+	.cs_n({ ~cs1, ~cs0 }),
+	.rd_n(~ata_rd),
+	.wr_n(~ata_wr),
+	.din({ hi_wr, din }),
+	.dout(ata_do),
 	.img_mounted(img_mounted),
 	.img_size(img_size),
 	.sdc_rd(sdc_rd),
