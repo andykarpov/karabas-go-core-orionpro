@@ -28,6 +28,8 @@
             "bitstream": "karabas_mini.bin"
         },
         "minig": {
+            "link": 2,
+            "build": "26111306",
             "bitstream": "karabas_minig.bin"
         }
     },
@@ -167,9 +169,23 @@
             "hotkey": "F12",
             "index": 14
         },
-        {"type": "-"},
-        {"type": "M", "name": "Disks", "open": 1},
-        {"type": "M", "name": "Files", "open": 2},
-        {"type": "M", "name": "Hardware", "open": 3}
+        {
+            "type": "-"
+        },
+        {
+            "type": "M",
+            "name": "Disks",
+            "open": 1
+        },
+        {
+            "type": "M",
+            "name": "Files",
+            "open": 2
+        },
+        {
+            "type": "M",
+            "name": "Hardware",
+            "open": 3
+        }
     ]
 }
